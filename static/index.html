@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>eBRAM AI 文档助手</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+</head>
+<body>
+
+<div class="layout">
+
+  <!-- ── 侧边栏 ── -->
+  <nav class="sidebar">
+
+    <!-- Logo 行 + 主题切换 -->
+    <div class="sidebar-top">
+      <div class="logo-wrap">
+        <div class="logo"><span class="logo-mark">e</span>BRAM</div>
+        <div class="logo-sub">AI 文档助手</div>
+      </div>
+      <button class="theme-btn" id="themeBtn" title="切换主题" aria-label="切换深色/浅色主题">
+        <svg class="icon-moon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg class="icon-sun"  width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+      </button>
+    </div>
+
+    <!-- 新对话 -->
+    <button class="new-chat-btn" id="newChatBtn">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      新对话
+    </button>
+
+    <!-- 历史记录区（Feature 1）-->
+    <div class="history-section">
+      <div class="sidebar-label" id="historyLabel">最近对话</div>
+      <!-- 动态渲染：无对话时显示使用提示，有对话时显示列表 -->
+      <div class="history-list" id="historyList"></div>
+    </div>
+
+  </nav>
+
+  <!-- ── 主区域 ── -->
+  <main class="main">
+
+    <div class="messages-wrap" id="messagesWrap">
+
+      <!-- 欢迎页 -->
+      <div class="welcome" id="welcome">
+        <div class="welcome-icon">📄</div>
+        <h1>eBRAM AI 文档助手</h1>
+        <p>上传 PDF 文档，AI 会逐页解析并给出专业分析</p>
+        <div class="welcome-cards">
+          <div class="welcome-card">
+            <span class="wc-icon">📎</span>
+            <div><strong>上传 PDF</strong><small>点击输入框左侧按钮选择文件</small></div>
+          </div>
+          <div class="welcome-card">
+            <span class="wc-icon">🖱️</span>
+            <div><strong>拖拽上传</strong><small>直接将 PDF 拖到页面任意位置</small></div>
+          </div>
+          <div class="welcome-card">
+            <span class="wc-icon">💬</span>
+            <div><strong>文字提问</strong><small>输入问题直接对话</small></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="messages-list" id="messagesList"></div>
+    </div>
+
+    <!-- 文件队列面板（多 PDF 上传） -->
+    <div class="file-queue-panel" id="fileQueuePanel" hidden>
+      <div class="fq-header">
+        <span class="fq-title">待处理文件</span>
+        <span class="fq-count" id="fqCount"></span>
+      </div>
+      <div class="fq-list" id="fqList"></div>
+      <div class="fq-actions">
+        <button class="process-btn" id="processBtn" hidden>开始文档分析</button>
+        <button class="analyze-btn" id="analyzeBtn" hidden disabled>开始综合分析</button>
+      </div>
+    </div>
+
+    <!-- 进度面板 -->
+    <div class="progress-panel" id="progressPanel" hidden>
+      <div class="progress-top">
+        <span class="progress-stage" id="progressStage">准备中...</span>
+        <span class="progress-ratio" id="progressRatio"></span>
+      </div>
+      <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+      <div class="progress-dots" id="progressDots"></div>
+    </div>
+
+    <!-- 输入区域 -->
+    <div class="input-area">
+      <div class="input-box" id="inputBox">
+        <label class="attach-btn" for="fileInput" title="上传 PDF 文档">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+        </label>
+        <input type="file" id="fileInput" accept=".pdf" multiple hidden />
+        <textarea id="textInput" placeholder="发送消息，或拖拽 PDF 文件到页面..." rows="1"></textarea>
+        <button class="send-btn" id="sendBtn" disabled title="发送 (Enter)">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+        </button>
+      </div>
+      <div class="input-footer">eBRAM AI 可能出现错误，重要内容请自行核实 &nbsp;·&nbsp; Enter 发送 &nbsp;·&nbsp; Shift+Enter 换行</div>
+    </div>
+
+  </main>
+</div>
+
+<!-- 拖拽蒙层 -->
+<div class="drag-overlay" id="dragOverlay" hidden>
+  <div class="drag-box">
+    <div class="drag-icon">📄</div>
+    <div class="drag-text">松开鼠标上传 PDF</div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

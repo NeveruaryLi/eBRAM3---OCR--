@@ -1,0 +1,53 @@
+INFO:     Started server process [33500]
+INFO:     Waiting for application startup.
+2026-04-12 18:41:16  INFO      app  服务启动中，正在验证配置...
+2026-04-12 18:41:16  INFO      model.config  配置验证通过：Agent A/B GPTBots 密钥及 PaddleOCR 密钥已配置，MESSAGE_URL=https://api-sg.gptbots.ai/v2/conversation/message，OCR_MODEL=PaddleOCR-VL-1.5
+2026-04-12 18:41:16  INFO      app  配置验证通过，服务已就绪 → http://localhost:8000
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:61653 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55438 - "POST /pdf/session/analyze HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49802 - "POST /pdf/session/analyze HTTP/1.1" 200 OK
+2026-04-12 18:42:45  INFO      api.chat  chat: user_id=test_user, text_len=7, reuse_conv=False
+2026-04-12 18:42:47  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v1/conversation "HTTP/1.1 200 OK"
+2026-04-12 18:42:47  INFO      api.chat  创建新 Agent B conversation_id: 69db7726b4e1942360103037
+2026-04-12 18:42:48  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56049 - "POST /chat HTTP/1.1" 200 OK
+2026-04-12 18:42:48  INFO      api.pdf_chat  收到 PDF：eBram.pdf，大小 427790 bytes，conv_id=None，session_id=2dbb1de0-e55d-4e89-b077-465e11d1ef37
+INFO:     127.0.0.1:56049 - "POST /pdf/pages/chat HTTP/1.1" 200 OK
+2026-04-12 18:42:49  INFO      httpx  HTTP Request: POST https://paddleocr.aistudio-app.com/api/v2/ocr/jobs "HTTP/1.1 200 OK"
+2026-04-12 18:42:49  INFO      api.pdf_chat  PaddleOCR 任务提交成功，jobId=36762942021967872
+2026-04-12 18:42:54  INFO      httpx  HTTP Request: GET https://paddleocr.aistudio-app.com/api/v2/ocr/jobs/36762942021967872 "HTTP/1.1 200 OK"
+2026-04-12 18:42:54  INFO      api.pdf_chat  开始下载 JSONL，URL 前缀：https://bj.bcebos.com/v1/paddleocr-store/job/c22de70deca7293121821d9885ab7eed3f3
+2026-04-12 18:42:54  INFO      httpx  HTTP Request: GET https://bj.bcebos.com/v1/paddleocr-store/job/c22de70deca7293121821d9885ab7eed3f3c256eda81c65d94056b7f6aa39cf6/json/a6942e029e276111d87e95e1d32fa2a4.json?authorization=bce-auth-v1%2FALTAKDN8mY5KlNI7zaRpLmOqrw%2F2026-04-12T10%3A42%3A53Z%2F604800%2F%2Fe64ed16bd2a8240415039d871c51499cdb35f6342610d4a96ab25ffd5d52f0fc "HTTP/1.1 200 OK"
+2026-04-12 18:42:54  INFO      api.pdf_chat  JSONL 下载成功（第 1 次），大小 19747 bytes
+2026-04-12 18:42:54  INFO      api.pdf_chat  JSONL 解析完成：1 行，共 2 个 layoutParsingResults 项，映射到 2 页
+2026-04-12 18:42:54  INFO      api.pdf_chat  OCR 空白页索引: [] (共 2 页)
+2026-04-12 18:42:55  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v1/conversation "HTTP/1.1 200 OK"
+2026-04-12 18:42:55  INFO      api.pdf_chat  创建新 conversation_id: 69db772eb4e1942360103052
+2026-04-12 18:43:04  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-12 18:43:04  INFO      api.pdf_chat  第 1 页分析完成
+2026-04-12 18:43:08  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-12 18:43:08  INFO      api.pdf_chat  第 2 页分析完成
+2026-04-12 18:43:08  INFO      api.pdf_chat  session 2dbb1de0-e55d-4e89-b077-465e11d1ef37：已暂存材料 1《eBram.pdf》，当前共 1 份
+2026-04-12 18:43:08  INFO      api.pdf_chat  PDF 多文档模式处理完成：eBram.pdf，2/2 页成功
+INFO:     127.0.0.1:56049 - "POST /pdf/session/analyze HTTP/1.1" 200 OK
+2026-04-12 18:43:08  INFO      api.pdf_chat  Session 2dbb1de0-e55d-4e89-b077-465e11d1ef37：复用已有 Agent B conversation_id=69db7726b4e1942360103037
+2026-04-12 18:43:08  INFO      api.pdf_chat  Session 2dbb1de0-e55d-4e89-b077-465e11d1ef37：向 Agent B 发送材料 1《eBram.pdf》，消息长度 6624 字符
+2026-04-12 18:43:22  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-12 18:43:22  INFO      api.pdf_chat  Session 2dbb1de0-e55d-4e89-b077-465e11d1ef37：发送综合分析请求，消息长度 33 字符
+2026-04-12 18:43:38  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-12 18:43:38  INFO      api.pdf_chat  Session 2dbb1de0-e55d-4e89-b077-465e11d1ef37：综合分析完成，回复长度 1745 字符
+2026-04-12 18:43:38  INFO      api.chat  chat: user_id=test_user, text_len=7, reuse_conv=True
+2026-04-12 18:43:38  INFO      api.chat  复用 Agent B conversation_id: 69db7726b4e1942360103037
+2026-04-12 18:43:42  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56049 - "POST /chat HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59667 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59667 - "GET /static/style.css HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:55006 - "GET /static/app.js HTTP/1.1" 200 OK
+2026-04-12 19:36:30  INFO      api.chat  chat: user_id=web_user, text_len=2, reuse_conv=False
+2026-04-12 19:36:32  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v1/conversation "HTTP/1.1 200 OK"
+2026-04-12 19:36:32  INFO      api.chat  创建新 Agent B conversation_id: 69db83c096f77752ed398dd8
+2026-04-12 19:36:34  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61471 - "POST /chat HTTP/1.1" 200 OK
+2026-04-12 21:11:16  INFO      api.pdf_chat  session_store 清理完成：删除 1 个过期会话，当前剩余 0 个

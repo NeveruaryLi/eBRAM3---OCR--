@@ -1,0 +1,264 @@
+INFO:     Will watch for changes in these directories: ['C:\\Users\\86137\\Desktop\\eBRAM3 - OCR成功']
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [34284] using WatchFiles
+INFO:     Started server process [28704]
+INFO:     Waiting for application startup.
+2026-04-11 03:58:21  INFO      app  服务启动中，正在验证配置...
+2026-04-11 03:58:21  INFO      model.config  配置验证通过：Agent A/B GPTBots 密钥及 PaddleOCR 密钥已配置，MESSAGE_URL=https://api-sg.gptbots.ai/v2/conversation/message，OCR_MODEL=PaddleOCR-VL-1.5
+2026-04-11 03:58:21  INFO      app  配置验证通过，服务已就绪 → http://localhost:8000
+INFO:     Application startup complete.
+2026-04-11 03:58:26  INFO      watchfiles.main  1 change detected
+2026-04-11 03:58:45  INFO      api.pdf_chat  收到 PDF：test.pdf，大小 169973 bytes，incoming_conv_id=None
+INFO:     127.0.0.1:57163 - "POST /pdf/pages/chat HTTP/1.1" 200 OK
+2026-04-11 03:58:45  INFO      httpx  HTTP Request: POST https://paddleocr.aistudio-app.com/api/v2/ocr/jobs "HTTP/1.1 200 OK"
+2026-04-11 03:58:45  INFO      api.pdf_chat  PaddleOCR 任务提交成功，jobId=36178077908848640
+2026-04-11 03:58:51  INFO      httpx  HTTP Request: GET https://paddleocr.aistudio-app.com/api/v2/ocr/jobs/36178077908848640 "HTTP/1.1 200 OK"
+2026-04-11 03:58:51  INFO      api.pdf_chat  开始下载 JSONL，URL 前缀：https://bj.bcebos.com/v1/paddleocr-store-7/job/cb710f4f5a80e1fe3b1a5ad66f9ca2b86
+2026-04-11 03:58:51  INFO      httpx  HTTP Request: GET https://bj.bcebos.com/v1/paddleocr-store-7/job/cb710f4f5a80e1fe3b1a5ad66f9ca2b8600b07df3ea8baa18d5f36e3c97044d7/json/5cd36d26f83a12dcd2a9d8d5311e2ee0.json?authorization=bce-auth-v1%2FALTAKDN8mY5KlNI7zaRpLmOqrw%2F2026-04-10T19%3A58%3A51Z%2F604800%2F%2F685ab54613da32a5e05799c00c4e736a9a6dd82aff4ea8e3db3a4ad7721c0a57 "HTTP/1.1 200 OK"
+2026-04-11 03:58:51  INFO      api.pdf_chat  JSONL 下载成功（第 1 次），大小 58116 bytes
+2026-04-11 03:58:51  INFO      api.pdf_chat  JSONL 解析完成：2 行，共 6 个 layoutParsingResults 项，映射到 6 页
+2026-04-11 03:58:51  INFO      api.pdf_chat  OCR 空白页索引: [] (共 6 页)
+2026-04-11 03:58:51  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v1/conversation "HTTP/1.1 200 OK"
+2026-04-11 03:58:51  INFO      api.pdf_chat  创建新 conversation_id: 69d9567c6148046ca6bea45a
+2026-04-11 03:59:31  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 03:59:31  INFO      api.pdf_chat  第 1 页分析完成
+2026-04-11 03:59:43  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 03:59:43  INFO      api.pdf_chat  第 2 页分析完成
+2026-04-11 03:59:58  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 03:59:58  INFO      api.pdf_chat  第 3 页分析完成
+2026-04-11 04:00:18  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:00:18  INFO      api.pdf_chat  第 4 页分析完成
+2026-04-11 04:00:37  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:00:37  INFO      api.pdf_chat  第 5 页分析完成
+2026-04-11 04:01:24  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:01:24  INFO      api.pdf_chat  第 6 页分析完成
+2026-04-11 04:01:24  INFO      api.pdf_chat  Agent B 输入构造完成：0 页摘要，0 页有效字段，输入长度 121 字符
+2026-04-11 04:01:24  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v1/conversation "HTTP/1.1 200 OK"
+2026-04-11 04:01:24  INFO      api.pdf_chat  Agent B conversation_id: 69d957146148046ca6beade1
+2026-04-11 04:01:30  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:01:30  INFO      api.pdf_chat  Agent B 综合分析完成，回复长度 368 字符
+2026-04-11 04:01:30  INFO      api.pdf_chat  PDF 处理完成：test.pdf，6/6 页成功
+2026-04-11 04:01:45  INFO      watchfiles.main  4 changes detected
+WARNING:  WatchFiles detected changes in 'test_full_pipeline.py'. Reloading...
+ 2026-04-11 04:02:08  INFO      api.pdf_chat  收到 PDF：test.pdf，大小 169973 bytes，incoming_conv_id=None
+INFO:     127.0.0.1:52294 - "POST /pdf/pages/chat HTTP/1.1" 200 OK
+2026-04-11 04:02:09  INFO      httpx  HTTP Request: POST https://paddleocr.aistudio-app.com/api/v2/ocr/jobs "HTTP/1.1 200 OK"
+2026-04-11 04:02:09  INFO      api.pdf_chat  PaddleOCR 任务提交成功，jobId=36178930075447296
+2026-04-11 04:02:14  INFO      httpx  HTTP Request: GET https://paddleocr.aistudio-app.com/api/v2/ocr/jobs/36178930075447296 "HTTP/1.1 200 OK"
+2026-04-11 04:02:14  INFO      api.pdf_chat  开始下载 JSONL，URL 前缀：https://bj.bcebos.com/v1/paddleocr-store-7/job/cb710f4f5a80e1fe3b1a5ad66f9ca2b86
+2026-04-11 04:02:14  INFO      httpx  HTTP Request: GET https://bj.bcebos.com/v1/paddleocr-store-7/job/cb710f4f5a80e1fe3b1a5ad66f9ca2b8600b07df3ea8baa18d5f36e3c97044d7/json/5cd36d26f83a12dcd2a9d8d5311e2ee0.json?authorization=bce-auth-v1%2FALTAKDN8mY5KlNI7zaRpLmOqrw%2F2026-04-10T20%3A02%3A14Z%2F604800%2F%2F9779243ff4f447ac3c5e40c613034a0ad0b136f8545008eee46cd1bf243196ed "HTTP/1.1 200 OK"
+2026-04-11 04:02:14  INFO      api.pdf_chat  JSONL 下载成功（第 1 次），大小 58116 bytes
+2026-04-11 04:02:14  INFO      api.pdf_chat  JSONL 解析完成：2 行，共 6 个 layoutParsingResults 项，映射到 6 页
+2026-04-11 04:02:14  INFO      api.pdf_chat  OCR 空白页索引: [] (共 6 页)
+2026-04-11 04:02:14  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v1/conversation "HTTP/1.1 200 OK"
+2026-04-11 04:02:14  INFO      api.pdf_chat  创建新 conversation_id: 69d95746c10ed91db3ebae0c
+2026-04-11 04:03:06  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:03:06  INFO      api.pdf_chat  第 1 页分析完成
+2026-04-11 04:03:21  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:03:21  INFO      api.pdf_chat  第 2 页分析完成
+2026-04-11 04:03:37  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:03:37  INFO      api.pdf_chat  第 3 页分析完成
+2026-04-11 04:03:55  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:03:55  INFO      api.pdf_chat  第 4 页分析完成
+2026-04-11 04:04:05  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:04:05  INFO      api.pdf_chat  第 5 页分析完成
+2026-04-11 04:04:14  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:04:14  INFO      api.pdf_chat  第 6 页分析完成
+2026-04-11 04:04:14  INFO      api.pdf_chat  Agent B 输入构造完成：0 页摘要，0 页有效字段，输入长度 121 字符
+2026-04-11 04:04:14  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v1/conversation "HTTP/1.1 200 OK"
+2026-04-11 04:04:14  INFO      api.pdf_chat  Agent B conversation_id: 69d957be6148046ca6beaf3d
+2026-04-11 04:04:19  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:04:19  INFO      api.pdf_chat  Agent B 综合分析完成，回复长度 472 字符
+2026-04-11 04:04:19  INFO      api.pdf_chat  PDF 处理完成：test.pdf，6/6 页成功
+2026-04-11 04:09:15  INFO      api.pdf_chat  收到 PDF：test.pdf，大小 169973 bytes，incoming_conv_id=None
+INFO:     127.0.0.1:53046 - "POST /pdf/pages/chat HTTP/1.1" 200 OK
+2026-04-11 04:09:16  INFO      httpx  HTTP Request: POST https://paddleocr.aistudio-app.com/api/v2/ocr/jobs "HTTP/1.1 200 OK"
+2026-04-11 04:09:16  INFO      api.pdf_chat  PaddleOCR 任务提交成功，jobId=36180722925510656
+2026-04-11 04:09:21  INFO      httpx  HTTP Request: GET https://paddleocr.aistudio-app.com/api/v2/ocr/jobs/36180722925510656 "HTTP/1.1 200 OK"
+2026-04-11 04:09:21  INFO      api.pdf_chat  开始下载 JSONL，URL 前缀：https://bj.bcebos.com/v1/paddleocr-store-7/job/cb710f4f5a80e1fe3b1a5ad66f9ca2b86
+2026-04-11 04:09:21  INFO      httpx  HTTP Request: GET https://bj.bcebos.com/v1/paddleocr-store-7/job/cb710f4f5a80e1fe3b1a5ad66f9ca2b8600b07df3ea8baa18d5f36e3c97044d7/json/5cd36d26f83a12dcd2a9d8d5311e2ee0.json?authorization=bce-auth-v1%2FALTAKDN8mY5KlNI7zaRpLmOqrw%2F2026-04-10T20%3A09%3A21Z%2F604800%2F%2F98454481c5debd304570ff1f8e2fffd51a00a2af846901ef6a9dacaf2a61bd02 "HTTP/1.1 200 OK"
+2026-04-11 04:09:22  INFO      api.pdf_chat  JSONL 下载成功（第 1 次），大小 58116 bytes
+2026-04-11 04:09:22  INFO      api.pdf_chat  JSONL 解析完成：2 行，共 6 个 layoutParsingResults 项，映射到 6 页
+2026-04-11 04:09:22  INFO      api.pdf_chat  OCR 空白页索引: [] (共 6 页)
+2026-04-11 04:09:22  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v1/conversation "HTTP/1.1 200 OK"
+2026-04-11 04:09:22  INFO      api.pdf_chat  创建新 conversation_id: 69d958f296f77752ed334072
+2026-04-11 04:09:27  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:09:27  INFO      api.pdf_chat  第 1 页分析完成
+2026-04-11 04:09:32  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:09:32  INFO      api.pdf_chat  第 2 页分析完成
+2026-04-11 04:09:38  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:09:38  INFO      api.pdf_chat  第 3 页分析完成
+2026-04-11 04:09:43  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:09:43  INFO      api.pdf_chat  第 4 页分析完成
+2026-04-11 04:09:47  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:09:47  INFO      api.pdf_chat  第 5 页分析完成
+2026-04-11 04:09:51  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:09:51  INFO      api.pdf_chat  第 6 页分析完成
+2026-04-11 04:09:51  INFO      api.pdf_chat  Agent B 输入构造完成：6 页摘要，6 页有效字段，输入长度 14898 字符
+2026-04-11 04:09:51  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v1/conversation "HTTP/1.1 200 OK"
+2026-04-11 04:09:51  INFO      api.pdf_chat  Agent B conversation_id: 69d9590fc10ed91db3ebb1e7
+2026-04-11 04:10:09  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:10:09  INFO      api.pdf_chat  Agent B 综合分析完成，回复长度 1703 字符
+2026-04-11 04:10:09  INFO      api.pdf_chat  PDF 处理完成：test.pdf，6/6 页成功
+2026-04-11 04:10:29  INFO      api.pdf_chat  收到 PDF：test.pdf，大小 169973 bytes，incoming_conv_id=None
+INFO:     127.0.0.1:54431 - "POST /pdf/pages/chat HTTP/1.1" 200 OK
+2026-04-11 04:10:29  INFO      httpx  HTTP Request: POST https://paddleocr.aistudio-app.com/api/v2/ocr/jobs "HTTP/1.1 200 OK"
+2026-04-11 04:10:29  INFO      api.pdf_chat  PaddleOCR 任务提交成功，jobId=36181029508009984
+2026-04-11 04:10:34  INFO      httpx  HTTP Request: GET https://paddleocr.aistudio-app.com/api/v2/ocr/jobs/36181029508009984 "HTTP/1.1 200 OK"
+2026-04-11 04:10:34  INFO      api.pdf_chat  开始下载 JSONL，URL 前缀：https://bj.bcebos.com/v1/paddleocr-store-7/job/cb710f4f5a80e1fe3b1a5ad66f9ca2b86
+2026-04-11 04:10:35  INFO      httpx  HTTP Request: GET https://bj.bcebos.com/v1/paddleocr-store-7/job/cb710f4f5a80e1fe3b1a5ad66f9ca2b8600b07df3ea8baa18d5f36e3c97044d7/json/5cd36d26f83a12dcd2a9d8d5311e2ee0.json?authorization=bce-auth-v1%2FALTAKDN8mY5KlNI7zaRpLmOqrw%2F2026-04-10T20%3A10%3A34Z%2F604800%2F%2Fae601c743ec0a6a6918a0f3ccef6a5c23baa4059221c120b720b3e6e9b14ae71 "HTTP/1.1 200 OK"
+2026-04-11 04:10:35  INFO      api.pdf_chat  JSONL 下载成功（第 1 次），大小 58116 bytes
+2026-04-11 04:10:35  INFO      api.pdf_chat  JSONL 解析完成：2 行，共 6 个 layoutParsingResults 项，映射到 6 页
+2026-04-11 04:10:35  INFO      api.pdf_chat  OCR 空白页索引: [] (共 6 页)
+2026-04-11 04:10:35  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v1/conversation "HTTP/1.1 200 OK"
+2026-04-11 04:10:35  INFO      api.pdf_chat  创建新 conversation_id: 69d9593bb4e194236009e697
+2026-04-11 04:10:39  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:10:39  INFO      api.pdf_chat  第 1 页分析完成
+2026-04-11 04:10:44  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:10:44  INFO      api.pdf_chat  第 2 页分析完成
+2026-04-11 04:10:49  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:10:49  INFO      api.pdf_chat  第 3 页分析完成
+2026-04-11 04:10:53  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:10:53  INFO      api.pdf_chat  第 4 页分析完成
+2026-04-11 04:10:57  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:10:57  INFO      api.pdf_chat  第 5 页分析完成
+2026-04-11 04:10:59  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:10:59  INFO      api.pdf_chat  第 6 页分析完成
+2026-04-11 04:10:59  INFO      api.pdf_chat  Agent B 输入构造完成：6 页摘要，6 页有效字段，输入长度 13582 字符
+2026-04-11 04:11:00  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v1/conversation "HTTP/1.1 200 OK"
+2026-04-11 04:11:00  INFO      api.pdf_chat  Agent B conversation_id: 69d9595496f77752ed334151
+2026-04-11 04:11:19  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:11:19  INFO      api.pdf_chat  Agent B 综合分析完成，回复长度 1870 字符
+2026-04-11 04:11:19  INFO      api.pdf_chat  PDF 处理完成：test.pdf，6/6 页成功
+INFO:     127.0.0.1:51393 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51393 - "GET /static/style.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58945 - "GET /static/app.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58945 - "GET /favicon.ico HTTP/1.1" 404 Not Found
+2026-04-11 04:20:01  INFO      api.pdf_chat  收到 PDF：UC1_0_negotiation_intake_form (Party A).pdf，大小 169973 bytes，incoming_conv_id=None
+INFO:     127.0.0.1:49629 - "POST /pdf/pages/chat HTTP/1.1" 200 OK
+2026-04-11 04:20:02  INFO      httpx  HTTP Request: POST https://paddleocr.aistudio-app.com/api/v2/ocr/jobs "HTTP/1.1 200 OK"
+2026-04-11 04:20:02  INFO      api.pdf_chat  PaddleOCR 任务提交成功，jobId=36183431422332928
+2026-04-11 04:20:07  INFO      httpx  HTTP Request: GET https://paddleocr.aistudio-app.com/api/v2/ocr/jobs/36183431422332928 "HTTP/1.1 200 OK"
+2026-04-11 04:20:07  INFO      api.pdf_chat  开始下载 JSONL，URL 前缀：https://bj.bcebos.com/v1/paddleocr-store-7/job/cb710f4f5a80e1fe3b1a5ad66f9ca2b86
+2026-04-11 04:20:07  INFO      httpx  HTTP Request: GET https://bj.bcebos.com/v1/paddleocr-store-7/job/cb710f4f5a80e1fe3b1a5ad66f9ca2b8600b07df3ea8baa18d5f36e3c97044d7/json/5cd36d26f83a12dcd2a9d8d5311e2ee0.json?authorization=bce-auth-v1%2FALTAKDN8mY5KlNI7zaRpLmOqrw%2F2026-04-10T20%3A20%3A07Z%2F604800%2F%2F64a8d13d9f2a760e1cfa4ca27b6eae415ba6441905f90b0f2352a2d2c323a1e4 "HTTP/1.1 200 OK"
+2026-04-11 04:20:07  INFO      api.pdf_chat  JSONL 下载成功（第 1 次），大小 58116 bytes
+2026-04-11 04:20:07  INFO      api.pdf_chat  JSONL 解析完成：2 行，共 6 个 layoutParsingResults 项，映射到 6 页
+2026-04-11 04:20:07  INFO      api.pdf_chat  OCR 空白页索引: [] (共 6 页)
+2026-04-11 04:20:08  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v1/conversation "HTTP/1.1 200 OK"
+2026-04-11 04:20:08  INFO      api.pdf_chat  创建新 conversation_id: 69d95b78b4e194236009ebb1
+2026-04-11 04:20:12  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:20:12  INFO      api.pdf_chat  第 1 页分析完成
+2026-04-11 04:20:18  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:20:18  INFO      api.pdf_chat  第 2 页分析完成
+2026-04-11 04:20:23  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:20:23  INFO      api.pdf_chat  第 3 页分析完成
+2026-04-11 04:20:27  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:20:27  INFO      api.pdf_chat  第 4 页分析完成
+2026-04-11 04:20:32  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:20:32  INFO      api.pdf_chat  第 5 页分析完成
+2026-04-11 04:20:37  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:20:37  INFO      api.pdf_chat  第 6 页分析完成
+2026-04-11 04:20:37  INFO      api.pdf_chat  Agent B 输入构造完成：6 页摘要，6 页有效字段，输入长度 13731 字符
+2026-04-11 04:20:38  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v1/conversation "HTTP/1.1 200 OK"
+2026-04-11 04:20:38  INFO      api.pdf_chat  Agent B conversation_id: 69d95b96b4e194236009ebf8
+2026-04-11 04:20:53  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 04:20:53  INFO      api.pdf_chat  Agent B 综合分析完成，回复长度 1774 字符
+2026-04-11 04:20:53  INFO      api.pdf_chat  PDF 处理完成：UC1_0_negotiation_intake_form (Party A).pdf，6/6 页成功
+INFO:     127.0.0.1:49887 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49887 - "GET /static/style.css HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:50529 - "GET /static/app.js HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:49435 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59311 - "GET /docs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58158 - "GET / HTTP/1.1" 200 OK
+2026-04-11 20:01:33  INFO      api.pdf_chat  收到 PDF：UC1_0_negotiation_intake_form (Party A).pdf，大小 169973 bytes，incoming_conv_id=None
+INFO:     127.0.0.1:63720 - "POST /pdf/pages/chat HTTP/1.1" 200 OK
+2026-04-11 20:01:33  INFO      httpx  HTTP Request: POST https://paddleocr.aistudio-app.com/api/v2/ocr/jobs "HTTP/1.1 200 OK"
+2026-04-11 20:01:33  INFO      api.pdf_chat  PaddleOCR 任务提交成功，jobId=36420371781058560
+2026-04-11 20:01:39  INFO      httpx  HTTP Request: GET https://paddleocr.aistudio-app.com/api/v2/ocr/jobs/36420371781058560 "HTTP/1.1 200 OK"
+2026-04-11 20:01:39  INFO      api.pdf_chat  开始下载 JSONL，URL 前缀：https://bj.bcebos.com/v1/paddleocr-store-7/job/cb710f4f5a80e1fe3b1a5ad66f9ca2b86
+2026-04-11 20:01:39  INFO      httpx  HTTP Request: GET https://bj.bcebos.com/v1/paddleocr-store-7/job/cb710f4f5a80e1fe3b1a5ad66f9ca2b8600b07df3ea8baa18d5f36e3c97044d7/json/5cd36d26f83a12dcd2a9d8d5311e2ee0.json?authorization=bce-auth-v1%2FALTAKDN8mY5KlNI7zaRpLmOqrw%2F2026-04-11T12%3A01%3A38Z%2F604800%2F%2Fdfd7603e225479d1f7de2b31a94dcc7dc6baa3c72caf8b5d35eff58454c7ce15 "HTTP/1.1 200 OK"
+2026-04-11 20:01:39  INFO      api.pdf_chat  JSONL 下载成功（第 1 次），大小 58116 bytes
+2026-04-11 20:01:39  INFO      api.pdf_chat  JSONL 解析完成：2 行，共 6 个 layoutParsingResults 项，映射到 6 页
+2026-04-11 20:01:39  INFO      api.pdf_chat  OCR 空白页索引: [] (共 6 页)
+2026-04-11 20:01:40  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v1/conversation "HTTP/1.1 200 OK"
+2026-04-11 20:01:40  INFO      api.pdf_chat  创建新 conversation_id: 69da3823c10ed91db3edde8a
+2026-04-11 20:01:45  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:01:45  INFO      api.pdf_chat  第 1 页分析完成
+2026-04-11 20:01:52  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:01:52  INFO      api.pdf_chat  第 2 页分析完成
+2026-04-11 20:01:59  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:01:59  INFO      api.pdf_chat  第 3 页分析完成
+2026-04-11 20:02:04  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:02:04  INFO      api.pdf_chat  第 4 页分析完成
+2026-04-11 20:02:08  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:02:08  INFO      api.pdf_chat  第 5 页分析完成
+2026-04-11 20:02:11  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:02:11  INFO      api.pdf_chat  第 6 页分析完成
+2026-04-11 20:02:11  INFO      api.pdf_chat  Agent B 输入构造完成：6 页摘要，6 页有效字段，输入长度 14654 字符
+2026-04-11 20:02:11  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v1/conversation "HTTP/1.1 200 OK"
+2026-04-11 20:02:11  INFO      api.pdf_chat  Agent B conversation_id: 69da38436148046ca6c0df83
+2026-04-11 20:02:27  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:02:27  INFO      api.pdf_chat  Agent B 综合分析完成，回复长度 1856 字符
+2026-04-11 20:02:27  INFO      api.pdf_chat  PDF 处理完成：UC1_0_negotiation_intake_form (Party A).pdf，6/6 页成功
+2026-04-11 20:02:27  INFO      api.pdf_chat  收到 PDF：UC1_1_exihibit_submission (Party A).pdf，大小 4347260 bytes，incoming_conv_id=None
+INFO:     127.0.0.1:63720 - "POST /pdf/pages/chat HTTP/1.1" 200 OK
+2026-04-11 20:02:28  INFO      httpx  HTTP Request: POST https://paddleocr.aistudio-app.com/api/v2/ocr/jobs "HTTP/1.1 200 OK"
+2026-04-11 20:02:28  INFO      api.pdf_chat  PaddleOCR 任务提交成功，jobId=36420601764524032
+2026-04-11 20:02:33  INFO      httpx  HTTP Request: GET https://paddleocr.aistudio-app.com/api/v2/ocr/jobs/36420601764524032 "HTTP/1.1 200 OK"
+2026-04-11 20:02:33  INFO      api.pdf_chat  开始下载 JSONL，URL 前缀：https://bj.bcebos.com/v1/paddleocr-store-5/job/f4010efc98710372622ea6d667ec84496
+2026-04-11 20:02:34  INFO      httpx  HTTP Request: GET https://bj.bcebos.com/v1/paddleocr-store-5/job/f4010efc98710372622ea6d667ec844965a4e1f6e698087b02c3e08ed70feee/json/5c3536255f91630922d23a7713e332fb.json?authorization=bce-auth-v1%2FALTAKDN8mY5KlNI7zaRpLmOqrw%2F2026-04-11T12%3A02%3A33Z%2F604800%2F%2F2caf10b1b112d240e24b31cfc840e72933dd0e66fafda9bfee045ef51990fdfd "HTTP/1.1 200 OK"
+2026-04-11 20:02:34  INFO      api.pdf_chat  JSONL 下载成功（第 1 次），大小 221120 bytes
+2026-04-11 20:02:34  INFO      api.pdf_chat  JSONL 解析完成：5 行，共 22 个 layoutParsingResults 项，映射到 22 页
+2026-04-11 20:02:34  INFO      api.pdf_chat  OCR 空白页索引: [] (共 22 页)
+2026-04-11 20:02:35  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v1/conversation "HTTP/1.1 200 OK"
+2026-04-11 20:02:35  INFO      api.pdf_chat  创建新 conversation_id: 69da385a6148046ca6c0dfd7
+2026-04-11 20:03:43  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:03:43  INFO      api.pdf_chat  第 1 页分析完成
+2026-04-11 20:03:47  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:03:47  INFO      api.pdf_chat  第 2 页分析完成
+2026-04-11 20:03:54  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:03:54  INFO      api.pdf_chat  第 3 页分析完成
+2026-04-11 20:03:59  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:03:59  INFO      api.pdf_chat  第 4 页分析完成
+2026-04-11 20:04:05  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:04:05  INFO      api.pdf_chat  第 5 页分析完成
+2026-04-11 20:04:12  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:04:12  INFO      api.pdf_chat  第 6 页分析完成
+2026-04-11 20:04:18  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:04:18  INFO      api.pdf_chat  第 7 页分析完成
+2026-04-11 20:04:28  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:04:28  INFO      api.pdf_chat  第 8 页分析完成
+2026-04-11 20:04:35  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:04:35  INFO      api.pdf_chat  第 9 页分析完成
+2026-04-11 20:04:42  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:04:42  INFO      api.pdf_chat  第 10 页分析完成
+2026-04-11 20:04:49  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:04:49  INFO      api.pdf_chat  第 11 页分析完成
+2026-04-11 20:04:55  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:04:55  INFO      api.pdf_chat  第 12 页分析完成
+2026-04-11 20:05:02  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:05:02  INFO      api.pdf_chat  第 13 页分析完成
+2026-04-11 20:05:11  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:05:11  INFO      api.pdf_chat  第 14 页分析完成
+2026-04-11 20:05:17  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:05:17  INFO      api.pdf_chat  第 15 页分析完成
+2026-04-11 20:05:23  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:05:23  INFO      api.pdf_chat  第 16 页分析完成
+2026-04-11 20:05:30  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:05:30  INFO      api.pdf_chat  第 17 页分析完成
+2026-04-11 20:05:38  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:05:38  INFO      api.pdf_chat  第 18 页分析完成
+2026-04-11 20:05:44  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:05:44  INFO      api.pdf_chat  第 19 页分析完成
+2026-04-11 20:05:52  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:05:52  INFO      api.pdf_chat  第 20 页分析完成
+2026-04-11 20:06:00  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:06:00  INFO      api.pdf_chat  第 21 页分析完成
+2026-04-11 20:06:08  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:06:08  INFO      api.pdf_chat  第 22 页分析完成
+2026-04-11 20:06:08  INFO      api.pdf_chat  Agent B 输入构造完成：22 页摘要，22 页有效字段，输入长度 61723 字符
+2026-04-11 20:06:08  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v1/conversation "HTTP/1.1 200 OK"
+2026-04-11 20:06:08  INFO      api.pdf_chat  Agent B conversation_id: 69da392fc10ed91db3ede1f0
+2026-04-11 20:06:29  INFO      httpx  HTTP Request: POST https://api-sg.gptbots.ai/v2/conversation/message "HTTP/1.1 200 OK"
+2026-04-11 20:06:29  INFO      api.pdf_chat  Agent B 综合分析完成，回复长度 2021 字符
+2026-04-11 20:06:29  INFO      api.pdf_chat  PDF 处理完成：UC1_1_exihibit_submission (Party A).pdf，22/22 页成功

@@ -1,0 +1,9 @@
+# 使用 ebram conda 环境运行（Python 3.11）
+# conda activate ebram
+# pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+httpx>=0.27.0
+python-dotenv>=1.0.0
+python-multipart>=0.0.24
+pymupdf>=1.23.0

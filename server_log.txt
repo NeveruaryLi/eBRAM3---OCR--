@@ -1,0 +1,40 @@
+INFO:     127.0.0.1:51832 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64774 - "POST /pdf/pages/chat HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56374 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56374 - "GET /static/style.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56742 - "GET /static/app.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56877 - "POST /pdf/pages/chat HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_594_1087_775_1270.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_594_1276_861_1445.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_343_275_899_590.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_183_711_582_1016.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_587_708_990_1013.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_chart_box_229_482_896_846.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_173_261_194_291.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_178_310_239_363.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_188_1054_220_1084.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_321_1056_356_1085.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_456_1057_492_1086.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_592_1055_623_1086.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_214_1026_246_1055.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_347_1026_384_1056.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_483_1029_520_1057.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_620_1026_651_1058.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_192_1051_224_1083.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_335_1051_375_1084.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_483_1053_523_1084.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_631_1051_666_1085.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_193_1049_226_1082.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_336_1051_375_1083.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_484_1051_523_1083.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_631_1050_667_1083.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_310_399_382_464.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_319_1257_830_1358.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_304_1143_814_1244.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_347_1201_848_1298.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_634_1186_783_1231.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_187_1033_660_1127.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_268_1156_791_1266.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_242_1187_278_1223.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_620_1182_770_1224.jpg HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56877 - "GET /imgs/img_in_image_box_193_1109_718_1213.jpg HTTP/1.1" 404 Not Found
