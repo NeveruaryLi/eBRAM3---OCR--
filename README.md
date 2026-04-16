@@ -45,8 +45,6 @@ cp .env.example .env
 
 ### 3. 启动服务
 
-**Windows：** 双击 `start.bat`
-
 **命令行：**
 ```bash
 python app.py
