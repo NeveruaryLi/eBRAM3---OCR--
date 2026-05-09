@@ -6,6 +6,7 @@ PDF 相关路由
 """
 
 import asyncio
+import base64
 import json
 import logging
 import re
@@ -358,12 +359,49 @@ def _build_doc_message(doc_index: int, doc: DocResult) -> str:
     )
 
 
+def _build_doc_item(
+    filename: str,
+    summaries: list[str],
+    merged_fields: dict,
+    party_label: str = "",
+) -> dict:
+    """
+    将单份文档的 Agent A 分析结果构造为 GPTBots document item（base64 编码 Markdown）。
+
+    Args:
+        filename:      原始文件名
+        summaries:     逐页摘要列表
+        merged_fields: 合并后的结构化字段
+        party_label:   甲方 / 乙方（为空则不标注）
+
+    Returns:
+        GPTBots document 数组中的单个 item dict。
+    """
+    filled = [(i + 1, s) for i, s in enumerate(summaries) if s.strip()]
+    summary_block = "\n\n".join(f"[Page {p}]\n{t}" for p, t in filled)
+    fields_json = json.dumps(merged_fields, ensure_ascii=False, indent=2)
+
+    prefix = f"【{party_label}】" if party_label else ""
+    content = (
+        f"# {prefix}{filename}\n\n"
+        f"## Document Summary ({len(filled)} pages)\n\n"
+        f"{summary_block}\n\n"
+        f"---\n\n"
+        f"## Structured Data\n\n"
+        f"```json\n{fields_json}\n```\n"
+    )
+    b64 = base64.b64encode(content.encode("utf-8")).decode("utf-8")
+    stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+    name = f"{prefix}{stem}.md"
+    return {"base64_content": b64, "format": "md", "name": name}
+
+
 async def _ask_agent_b(
     client: httpx.AsyncClient,
     conversation_id: str,
     input_text: str,
 ) -> str:
-    """将合并后的文档分析结果发给 Agent B，返回综合分析回复。"""
+    """向 Agent B 发送纯文本消息，返回综合分析回复（用于上下文注入和追问）。"""
     payload = {
         "conversation_id": conversation_id,
         "response_mode": "blocking",
@@ -373,6 +411,37 @@ async def _ask_agent_b(
                 "content": [{"type": "text", "text": input_text}],
             }
         ],
+    }
+    mr = await client.post(MESSAGE_URL, headers=agent_b_auth_headers(), json=payload)
+    mr.raise_for_status()
+    return extract_gptbots_reply(mr.json())
+
+
+async def _ask_agent_b_with_docs(
+    client: httpx.AsyncClient,
+    conversation_id: str,
+    text_prompt: str,
+    doc_items: list[dict],
+) -> str:
+    """
+    向 Agent B 发送文本提示 + document 附件消息。
+
+    Args:
+        client:          httpx 客户端
+        conversation_id: Agent B conversation ID
+        text_prompt:     消息中的文字说明部分
+        doc_items:       GPTBots document array（每项含 base64_content/format/name）
+
+    Returns:
+        Agent B 回复文本
+    """
+    content: list[dict] = [{"type": "text", "text": text_prompt}]
+    if doc_items:
+        content.append({"type": "document", "document": doc_items})
+    payload = {
+        "conversation_id": conversation_id,
+        "response_mode": "blocking",
+        "messages": [{"role": "user", "content": content}],
     }
     mr = await client.post(MESSAGE_URL, headers=agent_b_auth_headers(), json=payload)
     mr.raise_for_status()
@@ -831,19 +900,24 @@ async def pdf_pages_chat(
                 )
 
             else:
-                # ── 单文档模式：调用 Agent B 综合分析（原有逻辑）────────────
+                # ── 单文档模式：调用 Agent B 综合分析（document 格式）────────
                 yield _sse({"type": "agent_b_start", "message": "正在进行综合分析..."})
 
-                agent_b_input = _build_agent_b_input(summaries, merged_fields)
+                doc_item = _build_doc_item(filename, summaries, merged_fields)
                 logger.info(
-                    "Agent B 输入构造完成：%d 页摘要，%d 页有效字段，输入长度 %d 字符",
+                    "Agent B document 构造完成：%d 页摘要，%d 页有效字段，base64 大小 %d 字节",
                     len([s for s in summaries if s]),
                     len(part_b_list),
-                    len(agent_b_input),
+                    len(doc_item["base64_content"]),
+                )
+                single_doc_prompt = (
+                    "以下是一份法律文档的完整分析结果，包含逐页摘要和结构化提取字段，"
+                    "请基于这些信息进行综合分析。"
                 )
 
                 agent_b_reply = ""
                 agent_b_status = "success"
+                agent_b_conv_id = ""
                 try:
                     async with httpx.AsyncClient(timeout=60.0, trust_env=False) as b_init_client:
                         bcr = await b_init_client.post(
@@ -858,7 +932,9 @@ async def pdf_pages_chat(
                     logger.info("Agent B conversation_id: %s", agent_b_conv_id)
 
                     async with httpx.AsyncClient(timeout=180.0, trust_env=False) as b_client:
-                        agent_b_reply = await _ask_agent_b(b_client, agent_b_conv_id, agent_b_input)
+                        agent_b_reply = await _ask_agent_b_with_docs(
+                            b_client, agent_b_conv_id, single_doc_prompt, [doc_item]
+                        )
 
                     logger.info("Agent B 综合分析完成，回复长度 %d 字符", len(agent_b_reply))
                 except Exception as exc:
@@ -898,30 +974,20 @@ async def pdf_pages_chat(
 
 
 @router.post("/session/analyze")
-async def session_analyze(
-    session_id: str = Form(...),
-    agent_b_conversation_id: str | None = Form(default=None),
-):
+async def session_analyze(session_id: str = Form(...)):
     """
-    多文档综合分析端点。
+    多文档综合分析端点（v2）。
 
-    读取 session_store[session_id] 中所有已处理的文档，依次发给 Agent B（多轮对话），
-    最后发送综合分析请求，SSE 流式输出结果。
-
-    参数：
-      session_id               — 必填，对应 session_store 中暂存的文档列表。
-      agent_b_conversation_id  — 可选，若前端已有 Agent B 对话（如先发过文字消息），
-                                  则直接复用，使综合分析与之前的对话共享上下文。
+    按甲方 / 乙方分别创建独立的 Agent B conversation，各自接收对应材料（含通用材料），
+    串行处理后 SSE 流式输出结果。全为通用材料时退回单 conversation 行为。
 
     SSE 事件：
-      {"type": "analysis_start",    "doc_count": N, "message": "..."}
-      {"type": "analysis_sending",  "doc_index": N, "doc_count": N, "filename": "...", "message": "..."}
-      {"type": "analysis_result",   "content": "...", "status": "success"|"failed"}
-      {"type": "analysis_complete", "doc_count": N, "conversation_id": "...", "message": "..."}
+      {"type": "analysis_start",    "party": "甲方"|"乙方"|"通用", "message": "..."}
+      {"type": "analysis_result",   "party": "...", "content": "...", "status": "success"|"failed"}
+      {"type": "analysis_complete", "conversation_ids": {"甲方": "...", "乙方": "..."}, "message": "..."}
       {"type": "error",             "message": "..."}
     """
     docs = session_store.get(session_id)
-    incoming_agent_b_conv_id = agent_b_conversation_id
 
     async def stream() -> AsyncIterator[str]:
         if not docs:
@@ -929,26 +995,71 @@ async def session_analyze(
             return
 
         try:
-            doc_count = len(docs)
-            yield _sse({
-                "type": "analysis_start",
-                "doc_count": doc_count,
-                "message": f"开始综合分析，共 {doc_count} 份材料...",
-            })
+            # ── 按 party 分组 ──────────────────────────────────────────────
+            party_a_docs = [d for d in docs if d.party == "甲方"]
+            party_b_docs = [d for d in docs if d.party == "乙方"]
+            common_docs  = [d for d in docs if d.party == "通用"]
 
-            # 决定 Agent B conversation_id：复用已有对话 或 新建
-            if incoming_agent_b_conv_id:
-                agent_b_conv_id = incoming_agent_b_conv_id
-                logger.info(
-                    "Session %s：复用已有 Agent B conversation_id=%s",
-                    session_id, agent_b_conv_id,
-                )
+            has_a = bool(party_a_docs)
+            has_b = bool(party_b_docs)
+
+            if has_a and has_b:
+                parties_to_process = [
+                    (
+                        "甲方",
+                        party_a_docs + common_docs,
+                        "以下是甲方（Party A）提交的全部材料分析结果，"
+                        "请基于这些材料进行综合分析：识别甲方的核心主张、"
+                        "证据优势与薄弱点，并生成针对甲方的谈判准备问题清单。",
+                    ),
+                    (
+                        "乙方",
+                        party_b_docs + common_docs,
+                        "以下是乙方（Party B）提交的全部材料分析结果，"
+                        "请基于这些材料进行综合分析：识别乙方的核心主张、"
+                        "证据优势与薄弱点，并生成针对乙方的谈判准备问题清单。",
+                    ),
+                ]
+            elif has_a:
+                parties_to_process = [
+                    (
+                        "甲方",
+                        party_a_docs + common_docs,
+                        "以下是甲方提交的全部材料分析结果，请进行综合分析，"
+                        "识别争议焦点并生成针对性提问清单。",
+                    )
+                ]
+            elif has_b:
+                parties_to_process = [
+                    (
+                        "乙方",
+                        party_b_docs + common_docs,
+                        "以下是乙方提交的全部材料分析结果，请进行综合分析，"
+                        "识别争议焦点并生成针对性提问清单。",
+                    )
+                ]
+            else:
+                # 全为通用材料 — 退回单 conversation
+                parties_to_process = [
+                    (
+                        "通用",
+                        common_docs,
+                        f"以下是全部 {len(common_docs)} 份材料的分析结果，"
+                        "请进行综合分析，识别争议焦点并生成针对性提问清单。",
+                    )
+                ]
+
+            results_by_party: dict[str, dict] = {}
+
+            # ── 串行处理每一方 ────────────────────────────────────────────
+            for party_name, party_docs, party_prompt in parties_to_process:
                 yield _sse({
                     "type": "analysis_start",
-                    "doc_count": doc_count,
-                    "message": f"复用已有对话会话，开始综合分析，共 {doc_count} 份材料...",
+                    "party": party_name,
+                    "message": f"正在为{party_name}创建分析会话（{len(party_docs)} 份材料）...",
                 })
-            else:
+
+                # 创建 Agent B conversation
                 try:
                     async with httpx.AsyncClient(timeout=60.0, trust_env=False) as init_client:
                         bcr = await init_client.post(
@@ -957,100 +1068,77 @@ async def session_analyze(
                             json={"user_id": "session_analyze_user"},
                         )
                         bcr.raise_for_status()
-                    agent_b_conv_id = pick_conversation_id(bcr.json())
-                    if not agent_b_conv_id:
-                        yield _sse({"type": "error", "message": f"无法创建 Agent B 对话：{bcr.json()}"})
-                        return
-                    logger.info("Session %s：新建 Agent B conversation_id=%s", session_id, agent_b_conv_id)
-                except Exception as exc:
-                    yield _sse({"type": "error", "message": f"创建 Agent B 对话失败：{exc}"})
-                    return
-
-            # 逐份发送材料，然后请求综合分析
-            async with httpx.AsyncClient(timeout=180.0, trust_env=False) as b_client:
-                for i, doc in enumerate(docs):
-                    doc_index = i + 1
-                    yield _sse({
-                        "type": "analysis_sending",
-                        "doc_index": doc_index,
-                        "doc_count": doc_count,
-                        "filename": doc.filename,
-                        "message": f"正在发送材料 {doc_index}/{doc_count}：《{doc.filename}》...",
-                    })
-
-                    doc_msg = _build_doc_message(doc_index, doc)
+                    party_conv_id = pick_conversation_id(bcr.json())
+                    if not party_conv_id:
+                        yield _sse({
+                            "type": "error",
+                            "message": f"无法为{party_name}创建 Agent B 对话：{bcr.json()}",
+                        })
+                        continue
                     logger.info(
-                        "Session %s：向 Agent B 发送材料 %d《%s》，消息长度 %d 字符",
-                        session_id, doc_index, doc.filename, len(doc_msg),
+                        "Session %s %s：Agent B conversation_id=%s",
+                        session_id, party_name, party_conv_id,
                     )
-                    try:
-                        await _ask_agent_b(b_client, agent_b_conv_id, doc_msg)
-                    except Exception as exc:
-                        logger.error(
-                            "Session %s：材料 %d 发送 Agent B 失败：%s",
-                            session_id, doc_index, exc,
-                        )
-                        yield _sse({"type": "error", "message": f"发送材料 {doc_index} 失败：{exc}"})
-                        return
+                except Exception as exc:
+                    yield _sse({"type": "error", "message": f"创建{party_name} Agent B 对话失败：{exc}"})
+                    continue
 
-                # 综合分析请求 — 根据是否双方材料构造不同提示词
-                party_a_docs = [d for d in docs if d.party == "甲方"]
-                party_b_docs = [d for d in docs if d.party == "乙方"]
-
-                if party_a_docs and party_b_docs:
-                    final_msg = (
-                        f"以上是本仲裁案件的全部材料，包含：\n"
-                        f"- 甲方材料 {len(party_a_docs)} 份\n"
-                        f"- 乙方材料 {len(party_b_docs)} 份\n\n"
-                        f"请基于上述材料进行综合分析，具体要求：\n"
-                        f"1. 梳理双方争议的核心焦点\n"
-                        f"2. 对比甲乙双方的主张、证据及其关联性\n"
-                        f"3. 针对争议焦点，为仲裁庭生成一份有针对性的提问清单\n"
-                        f"4. 提问清单应涵盖事实认定、证据评估和法律适用等维度，"
-                        f"并注明每个问题的提问对象（甲方/乙方）"
+                # 构造每份材料的 document item
+                # party-specific 材料保留自身标签，通用材料不标注方向
+                doc_items = [
+                    _build_doc_item(
+                        d.filename,
+                        d.summaries,
+                        d.merged_fields,
+                        d.party if d.party != "通用" else "",
                     )
-                else:
-                    final_msg = (
-                        f"以上是全部 {doc_count} 份材料的完整分析结果，"
-                        f"请基于所有材料进行综合分析，识别争议焦点并生成针对性提问清单。"
-                    )
-                yield _sse({
-                    "type": "analysis_sending",
-                    "doc_index": doc_count + 1,
-                    "doc_count": doc_count,
-                    "filename": "",
-                    "message": "正在请求综合分析...",
-                })
-                logger.info("Session %s：发送综合分析请求，消息长度 %d 字符", session_id, len(final_msg))
+                    for d in party_docs
+                ]
+                total_b64 = sum(len(it["base64_content"]) for it in doc_items)
+                logger.info(
+                    "Session %s %s：构造 %d 份 document item，base64 合计 %d 字节",
+                    session_id, party_name, len(doc_items), total_b64,
+                )
 
+                # 一次请求发送所有材料 + 提示词
                 analysis_result = ""
                 analysis_status = "success"
                 try:
-                    analysis_result = await _ask_agent_b(b_client, agent_b_conv_id, final_msg)
+                    async with httpx.AsyncClient(timeout=240.0, trust_env=False) as b_client:
+                        analysis_result = await _ask_agent_b_with_docs(
+                            b_client, party_conv_id, party_prompt, doc_items
+                        )
                     logger.info(
-                        "Session %s：综合分析完成，回复长度 %d 字符",
-                        session_id, len(analysis_result),
+                        "Session %s %s：综合分析完成，回复长度 %d 字符",
+                        session_id, party_name, len(analysis_result),
                     )
                 except Exception as exc:
-                    logger.error("Session %s：综合分析失败：%s", session_id, exc)
+                    logger.error("Session %s %s：综合分析失败：%s", session_id, party_name, exc)
                     analysis_result = f"综合分析失败：{exc}"
                     analysis_status = "failed"
 
-                # 暂存分析结果，供后续 /session/report 调用
-                if analysis_status == "success":
-                    session_results_store[session_id] = analysis_result
+                results_by_party[party_name] = {
+                    "analysis_text": analysis_result,
+                    "conversation_id": party_conv_id,
+                }
 
                 yield _sse({
                     "type": "analysis_result",
+                    "party": party_name,
                     "content": analysis_result,
                     "status": analysis_status,
                 })
-                yield _sse({
-                    "type": "analysis_complete",
-                    "doc_count": doc_count,
-                    "conversation_id": agent_b_conv_id,  # 返回 Agent B 的 conversation_id 供后续文字追问
-                    "message": f"综合分析完成，共分析 {doc_count} 份材料",
-                })
+
+            # ── 存储结果 & 收尾 ───────────────────────────────────────────
+            if results_by_party:
+                session_results_store[session_id] = results_by_party
+
+            conversation_ids = {p: r["conversation_id"] for p, r in results_by_party.items()}
+            yield _sse({
+                "type": "analysis_complete",
+                "conversation_ids": conversation_ids,
+                "message": f"综合分析完成，共分析 {len(results_by_party)} 方材料",
+            })
 
         except Exception as exc:
             logger.exception("Session %s：综合分析出现未预期的错误", session_id)
@@ -1069,6 +1157,7 @@ async def session_analyze(
 @router.post("/session/report")
 async def session_report(
     session_id: str = Form(...),
+    party: str = Form(default=""),
     output_format: str = Form(default="pdf"),
 ):
     """
@@ -1076,6 +1165,7 @@ async def session_report(
 
     参数：
       session_id     — 必填，对应 session_store 中暂存的文档列表。
+      party          — "甲方" | "乙方" | "通用" | ""（为空时取第一个可用方）。
       output_format  — "pdf"（默认）或 "docx"。
 
     返回：
@@ -1092,13 +1182,43 @@ async def session_report(
     if fmt not in ("pdf", "docx"):
         fmt = "pdf"
 
-    analysis_text = session_results_store.get(session_id, "")
+    # 从 session_results_store 中按 party 取 analysis_text
+    results = session_results_store.get(session_id)
+    if not results:
+        analysis_text = ""
+    elif isinstance(results, dict):
+        # 新格式：{party: {analysis_text, conversation_id}}
+        if party and party in results:
+            analysis_text = results[party]["analysis_text"]
+            report_party_label = party
+        elif party:
+            raise HTTPException(
+                status_code=404,
+                detail=f"未找到{party}的分析结果，请先完成综合分析",
+            )
+        else:
+            # 未指定方：取第一个
+            first_party, first_result = next(iter(results.items()))
+            analysis_text = first_result["analysis_text"]
+            report_party_label = first_party
+    else:
+        # 兼容旧格式（纯字符串）
+        analysis_text = str(results)
+        report_party_label = ""
+
+    # 文件名含方标签
+    party_suffix = f"_{report_party_label}" if report_party_label else ""
+    base_name = f"ebram_analysis{party_suffix}"
 
     try:
         from model.report_generator import generate_report  # noqa: PLC0415
-        file_bytes, filename = generate_report(analysis_text=analysis_text, output_format=fmt)
+        file_bytes, filename = generate_report(
+            analysis_text=analysis_text,
+            output_format=fmt,
+            base_name=base_name,
+        )
     except Exception as exc:
-        logger.exception("报告生成失败：session_id=%s", session_id)
+        logger.exception("报告生成失败：session_id=%s, party=%s", session_id, party)
         raise HTTPException(status_code=500, detail=f"报告生成失败：{exc}") from exc
 
     if fmt == "pdf" and filename.endswith(".pdf"):
@@ -1117,3 +1237,84 @@ async def session_report(
             "Content-Length": str(len(file_bytes)),
         },
     )
+
+
+@router.post("/session/chat")
+async def session_chat(
+    session_id: str = Form(...),
+    text: str = Form(...),
+    followup_conversation_id: str | None = Form(default=None),
+):
+    """
+    基于已完成的综合分析进行后续文字追问。
+
+    首次调用（followup_conversation_id 为空）时：
+      1. 创建新的 Agent B conversation
+      2. 将甲乙双方的分析结果以文本形式注入，作为上下文
+      3. 发送用户问题，返回回复
+
+    后续调用传入 followup_conversation_id，直接复用该 conversation。
+
+    参数：
+      session_id               — 必填。
+      text                     — 用户追问内容。
+      followup_conversation_id — 可选，复用已有的追问 conversation。
+
+    返回：
+      {"reply": "...", "conversation_id": "..."}
+    """
+    results = session_results_store.get(session_id)
+    if not results:
+        raise HTTPException(
+            status_code=404,
+            detail="会话不存在或尚未完成综合分析，请先进行综合分析",
+        )
+
+    try:
+        conv_id: str
+
+        if followup_conversation_id:
+            conv_id = followup_conversation_id
+        else:
+            # 创建新 conversation 并注入上下文
+            async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
+                cr = await client.post(
+                    CREATE_URL,
+                    headers=agent_b_auth_headers(),
+                    json={"user_id": "session_chat_user"},
+                )
+                cr.raise_for_status()
+            conv_id = pick_conversation_id(cr.json())
+            if not conv_id:
+                raise HTTPException(status_code=502, detail=f"无法创建 Agent B 对话：{cr.json()}")
+
+            # 构造并注入上下文（甲乙双方分析结果合并为文本）
+            if isinstance(results, dict):
+                context_parts = [
+                    f"## {p}综合分析结果\n\n{r['analysis_text']}"
+                    for p, r in results.items()
+                ]
+            else:
+                context_parts = [str(results)]
+
+            context_text = (
+                "以下是本案件的综合分析结果，请在回答后续问题时以此为背景：\n\n"
+                + "\n\n---\n\n".join(context_parts)
+            )
+            async with httpx.AsyncClient(timeout=180.0, trust_env=False) as ctx_client:
+                await _ask_agent_b(ctx_client, conv_id, context_text)
+            logger.info(
+                "Session %s：已创建追问 conversation 并注入上下文，conv_id=%s",
+                session_id, conv_id,
+            )
+
+        # 发送用户追问
+        async with httpx.AsyncClient(timeout=120.0, trust_env=False) as chat_client:
+            reply = await _ask_agent_b(chat_client, conv_id, text)
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"追问失败：{exc}") from exc
+
+    return {"reply": reply, "conversation_id": conv_id}

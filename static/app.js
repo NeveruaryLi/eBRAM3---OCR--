@@ -44,8 +44,15 @@ const fqList         = document.getElementById('fqList');
 const fqCount        = document.getElementById('fqCount');
 const processBtn     = document.getElementById('processBtn');
 const analyzeBtn     = document.getElementById('analyzeBtn');
-const reportBtnWord  = document.getElementById('reportBtnWord');
-const reportBtnPdf   = document.getElementById('reportBtnPdf');
+// 甲方下载按钮
+const reportBtnWordA = document.getElementById('reportBtnWordA');
+const reportBtnPdfA  = document.getElementById('reportBtnPdfA');
+// 乙方下载按钮
+const reportBtnWordB = document.getElementById('reportBtnWordB');
+const reportBtnPdfB  = document.getElementById('reportBtnPdfB');
+// 通用下载按钮
+const reportBtnWordG = document.getElementById('reportBtnWordG');
+const reportBtnPdfG  = document.getElementById('reportBtnPdfG');
 const fqHeader       = document.getElementById('fqHeader');
 const fqBody         = document.getElementById('fqBody');
 const fqToggle       = document.getElementById('fqToggle');
@@ -61,9 +68,15 @@ let sessions = [];          // Session[]
 let currentSessionId = null;
 
 // 多文档队列状态
-let multiSessionId = null;  // 后端 session_store key（UUID）
-let fileQueue = [];         // [{name, file, status: 'pending'|'processing'|'done'|'failed', party: '甲方'|'乙方'|'通用'}]
-let fqCollapsed = false;    // 文件队列面板折叠状态
+let multiSessionId = null;         // 后端 session_store key（UUID）
+let fileQueue = [];                // [{name, file, status, party}]
+let fqCollapsed = false;           // 文件队列面板折叠状态
+
+// 综合分析结果（甲乙双方独立）
+let analysisResults = {};          // { "甲方": "分析文本", "乙方": "分析文本", ... }
+let conversationIdPartyA = null;   // Agent B 甲方 conversation_id
+let conversationIdPartyB = null;   // Agent B 乙方 conversation_id
+let followupConversationId = null; // 文字追问 conversation_id（首次创建后复用）
 
 // ── marked.js 配置 ────────────────────────────────────────────────────────────
 marked.use({ breaks: true, gfm: true });
@@ -539,18 +552,39 @@ async function processPdfMulti(file) {
 }
 
 analyzeBtn.addEventListener('click', startAnalysis);
-if (reportBtnWord) reportBtnWord.addEventListener('click', () => downloadReport('docx'));
-if (reportBtnPdf)  reportBtnPdf.addEventListener('click',  () => downloadReport('pdf'));
 
-async function downloadReport(format) {
+// 注册所有下载按钮（party + format 组合）
+const _reportBtnMap = {
+  'A-docx': reportBtnWordA, 'A-pdf': reportBtnPdfA,
+  'B-docx': reportBtnWordB, 'B-pdf': reportBtnPdfB,
+  'G-docx': reportBtnWordG, 'G-pdf': reportBtnPdfG,
+};
+const _reportPartyMap = { A: '甲方', B: '乙方', G: '通用' };
+
+if (reportBtnWordA) reportBtnWordA.addEventListener('click', () => downloadReport('甲方', 'docx'));
+if (reportBtnPdfA)  reportBtnPdfA.addEventListener ('click', () => downloadReport('甲方', 'pdf'));
+if (reportBtnWordB) reportBtnWordB.addEventListener('click', () => downloadReport('乙方', 'docx'));
+if (reportBtnPdfB)  reportBtnPdfB.addEventListener ('click', () => downloadReport('乙方', 'pdf'));
+if (reportBtnWordG) reportBtnWordG.addEventListener('click', () => downloadReport('通用', 'docx'));
+if (reportBtnPdfG)  reportBtnPdfG.addEventListener ('click', () => downloadReport('通用', 'pdf'));
+
+/**
+ * 按方 + 格式下载报告。
+ * @param {'甲方'|'乙方'|'通用'} party
+ * @param {'pdf'|'docx'} format
+ */
+async function downloadReport(party, format) {
   if (!multiSessionId) { toast('请先完成综合分析'); return; }
 
-  const btn = format === 'pdf' ? reportBtnPdf : reportBtnWord;
+  const keyMap = { '甲方': 'A', '乙方': 'B', '通用': 'G' };
+  const key = `${keyMap[party] || 'G'}-${format}`;
+  const btn = _reportBtnMap[key];
   if (btn) btn.disabled = true;
   toast('正在生成报告，请稍候...');
 
   const form = new FormData();
   form.append('session_id', multiSessionId);
+  form.append('party', party);
   form.append('output_format', format);
 
   try {
@@ -562,10 +596,10 @@ async function downloadReport(format) {
       return;
     }
 
-    // 若 PDF 转换失败，服务端会降级返回 docx，以 Content-Disposition 为准
+    // 服务端可能降级返回 docx，以 Content-Disposition 文件名为准
     const cd = res.headers.get('Content-Disposition') || '';
     const nameMatch = cd.match(/filename[^;=\n]*=["']?([^"'\n]+)["']?/);
-    const downloadName = nameMatch ? nameMatch[1] : `ebram_analysis.${format}`;
+    const downloadName = nameMatch ? nameMatch[1] : `ebram_analysis_${party}.${format}`;
 
     const blob = await res.blob();
     const url  = URL.createObjectURL(blob);
@@ -584,18 +618,42 @@ async function downloadReport(format) {
   }
 }
 
+/** 显示指定方的下载按钮 */
+function showReportButtons(party) {
+  const keyMap = { '甲方': 'A', '乙方': 'B', '通用': 'G' };
+  const k = keyMap[party] || 'G';
+  const wordBtn = _reportBtnMap[`${k}-docx`];
+  const pdfBtn  = _reportBtnMap[`${k}-pdf`];
+  if (wordBtn) { wordBtn.hidden = false; wordBtn.disabled = false; }
+  if (pdfBtn)  { pdfBtn.hidden  = false; pdfBtn.disabled  = false; }
+}
+
+/** 隐藏所有下载按钮 */
+function hideAllReportButtons() {
+  for (const btn of Object.values(_reportBtnMap)) {
+    if (btn) { btn.hidden = true; btn.disabled = true; }
+  }
+}
+
 async function startAnalysis() {
   if (!multiSessionId || busy) return;
 
   setBusy(true);
   showProgress('正在进行综合分析...', 0, 0);
 
+  // 重置上一轮分析状态
+  analysisResults = {};
+  conversationIdPartyA = null;
+  conversationIdPartyB = null;
+  followupConversationId = null;
+  hideAllReportButtons();
+
   const form = new FormData();
   form.append('session_id', multiSessionId);
-  if (currentConversationId) form.append('agent_b_conversation_id', currentConversationId);
 
-  const summaryId = `analysis-${Date.now()}`;
-  let analysisCreated = false;
+  // 追踪每方是否已创建消息气泡
+  const partyMsgIds = {};    // { "甲方": "analysis-甲方-ts", ... }
+  const partyCreated = {};   // { "甲方": true, ... }
 
   try {
     const res = await fetch(`${API_BASE}/pdf/session/analyze`, { method: 'POST', body: form });
@@ -623,32 +681,53 @@ async function startAnalysis() {
         try { ev = JSON.parse(part.slice(6)); } catch { continue; }
 
         switch (ev.type) {
-          case 'analysis_start':
-            showProgress(ev.message, 0, ev.doc_count + 1);
-            addMessage('ai', `⏳ 正在综合分析 ${ev.doc_count} 份材料，请稍候...`, summaryId);
-            break;
-          case 'analysis_sending':
-            showProgress(ev.message, ev.doc_index - 1, ev.doc_count + 1);
-            break;
-          case 'analysis_result': {
-            const aiTime = Date.now();
-            const content = ev.status === 'failed'
-              ? `❌ 综合分析失败：${ev.content}`
-              : ev.content;
-            updateMessage(summaryId, content);
-            appendToCurrentSession('ai', content, aiTime);
-            saveSessions();
-            analysisCreated = true;
+          case 'analysis_start': {
+            const party = ev.party || '';
+            showProgress(ev.message, 0, 0);
+            // 为该方创建等待气泡（若尚未创建）
+            if (party && !partyMsgIds[party]) {
+              const msgId = `analysis-${party}-${Date.now()}`;
+              partyMsgIds[party] = msgId;
+              const partyLabel = party === '通用' ? '' : `${party} `;
+              addMessage('ai', `⏳ 正在综合分析${partyLabel}材料，请稍候...`, msgId);
+            }
             break;
           }
-          case 'analysis_complete':
-            showProgress(ev.message, ev.doc_count, ev.doc_count);
-            if (ev.conversation_id) {
-              updateSessionConversationId(ev.conversation_id);
+          case 'analysis_result': {
+            const party = ev.party || '通用';
+            const aiTime = Date.now();
+            const content = ev.status === 'failed'
+              ? `❌ ${party}综合分析失败：${ev.content}`
+              : ev.content;
+
+            // 更新或新建该方的气泡
+            const msgId = partyMsgIds[party];
+            if (msgId && document.getElementById(msgId)) {
+              updateMessage(msgId, content);
+            } else {
+              const newId = `analysis-${party}-${Date.now()}`;
+              partyMsgIds[party] = newId;
+              addMessage('ai', content, newId, aiTime);
             }
-            if (reportBtnWord) { reportBtnWord.hidden = false; reportBtnWord.disabled = false; }
-            if (reportBtnPdf)  { reportBtnPdf.hidden  = false; reportBtnPdf.disabled  = false; }
+
+            if (ev.status !== 'failed') {
+              analysisResults[party] = content;
+              showReportButtons(party);
+            }
+            appendToCurrentSession('ai', content, aiTime);
+            saveSessions();
+            partyCreated[party] = true;
             break;
+          }
+          case 'analysis_complete': {
+            showProgress(ev.message || '综合分析完成', 1, 1);
+            // 保存各方 conversation_id
+            if (ev.conversation_ids) {
+              conversationIdPartyA = ev.conversation_ids['甲方'] || null;
+              conversationIdPartyB = ev.conversation_ids['乙方'] || null;
+            }
+            break;
+          }
           case 'error':
             addMessage('ai', `❌ 综合分析出错：${ev.message}`);
             break;
@@ -656,9 +735,12 @@ async function startAnalysis() {
       }
     }
 
-    if (!analysisCreated) {
-      const placeholder = document.getElementById(summaryId);
-      if (placeholder) updateMessage(summaryId, '⚠️ 综合分析未完成，请重试。');
+    // 处理未收到 result 事件的方（异常中断）
+    for (const [party, msgId] of Object.entries(partyMsgIds)) {
+      if (!partyCreated[party]) {
+        const el = document.getElementById(msgId);
+        if (el) updateMessage(msgId, `⚠️ ${party}分析未完成，请重试。`);
+      }
     }
 
   } catch (e) {
@@ -848,6 +930,15 @@ function extractReply(data) {
 }
 
 // ── 文字聊天 ──────────────────────────────────────────────────────────────────
+
+/**
+ * 判断是否应该走「综合分析追问」路径。
+ * 条件：本次会话已完成综合分析（analysisResults 非空且 multiSessionId 有值）。
+ */
+function shouldUseAnalysisChat() {
+  return multiSessionId && Object.keys(analysisResults).length > 0;
+}
+
 async function sendText(text) {
   const time = Date.now();
   addMessage('user', text, undefined, time);
@@ -858,33 +949,56 @@ async function sendText(text) {
   const tid = addThinking();
 
   try {
-    const res = await fetch(`${API_BASE}/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text,
-        user_id: 'web_user',
-        conversation_id: currentConversationId,
-      }),
-    });
+    if (shouldUseAnalysisChat()) {
+      // ── 综合分析追问：路由到 /pdf/session/chat（Agent B）────────────
+      const form = new FormData();
+      form.append('session_id', multiSessionId);
+      form.append('text', text);
+      if (followupConversationId) form.append('followup_conversation_id', followupConversationId);
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: res.statusText }));
-      updateMessage(tid, `❌ 请求失败（${res.status}）：${err.detail || res.statusText}`);
-      return;
+      const res = await fetch(`${API_BASE}/pdf/session/chat`, { method: 'POST', body: form });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        updateMessage(tid, `❌ 请求失败（${res.status}）：${err.detail || res.statusText}`);
+        return;
+      }
+
+      const data = await res.json();
+      if (data.conversation_id) followupConversationId = data.conversation_id;
+
+      const aiTime = Date.now();
+      updateMessage(tid, data.reply || '（无回复）');
+      appendToCurrentSession('ai', data.reply || '', aiTime);
+      saveSessions();
+
+    } else {
+      // ── 普通文字聊天：路由到 /chat（Agent A）────────────────────────
+      const res = await fetch(`${API_BASE}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text,
+          user_id: 'web_user',
+          conversation_id: currentConversationId,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        updateMessage(tid, `❌ 请求失败（${res.status}）：${err.detail || res.statusText}`);
+        return;
+      }
+
+      const data = await res.json();
+      if (data.conversation_id) updateSessionConversationId(data.conversation_id);
+
+      const reply = extractReply(data.message_response) || extractReply(data);
+      const aiTime = Date.now();
+      updateMessage(tid, reply);
+      appendToCurrentSession('ai', reply, aiTime);
+      saveSessions();
     }
-
-    const data = await res.json();
-
-    if (data.conversation_id) {
-      updateSessionConversationId(data.conversation_id);
-    }
-
-    const reply = extractReply(data.message_response) || extractReply(data);
-    const aiTime = Date.now();
-    updateMessage(tid, reply);
-    appendToCurrentSession('ai', reply, aiTime);
-    saveSessions();
 
   } catch (e) {
     updateMessage(tid, `❌ 网络错误：${e.message}`);
@@ -1157,8 +1271,12 @@ newChatBtn.addEventListener('click', () => {
   if (fqToggle) fqToggle.textContent = '▼';
   updateProcessBtn();
   updateAnalyzeBtn();
-  if (reportBtnWord) reportBtnWord.hidden = true;
-  if (reportBtnPdf)  reportBtnPdf.hidden  = true;
+  // 重置分析状态和下载按钮
+  analysisResults = {};
+  conversationIdPartyA = null;
+  conversationIdPartyB = null;
+  followupConversationId = null;
+  hideAllReportButtons();
   createNewSession();
   renderHistoryList();
 });

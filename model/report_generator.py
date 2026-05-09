@@ -281,8 +281,8 @@ def _markdown_to_doc(doc: Document, md_text: str) -> None:
 def generate_report(
     analysis_text: str,
     output_format: str = "pdf",
-    # Legacy positional parameter kept for call-site compat; not used in body
-    docs: list | None = None,
+    docs: list | None = None,       # 废弃参数，保留兼容旧调用签名
+    base_name: str = "ebram_analysis",
 ) -> tuple[bytes, str]:
     """
     将 Agent B 综合分析文本（Markdown）转换为 Word/PDF 报告。
@@ -290,7 +290,8 @@ def generate_report(
     Args:
         analysis_text: Agent B 的综合分析回复（Markdown 格式）
         output_format: "pdf"（默认）或 "docx"
-        docs:         废弃参数，保留以兼容旧调用签名，不再写入报告
+        docs:          废弃参数，保留以兼容旧调用签名，不再写入报告
+        base_name:     输出文件名（不含扩展名），默认 "ebram_analysis"
 
     Returns:
         (file_bytes, filename) 元组
@@ -306,26 +307,28 @@ def generate_report(
             _set_run_font(run, color_rgb=(0x80, 0x80, 0x80), size_pt=_BODY_SIZE)
         _set_para_spacing(para)
 
+    safe_name = base_name.replace(" ", "_") or "ebram_analysis"
+
     with tempfile.TemporaryDirectory() as tmp_dir:
-        docx_path = os.path.join(tmp_dir, "ebram_analysis.docx")
+        docx_path = os.path.join(tmp_dir, f"{safe_name}.docx")
         doc.save(docx_path)
         logger.info("Word 文档已生成：%.1f KB", os.path.getsize(docx_path) / 1024)
 
         fmt = output_format.lower().strip()
 
         if fmt == "pdf":
-            pdf_path = os.path.join(tmp_dir, "ebram_analysis.pdf")
+            pdf_path = os.path.join(tmp_dir, f"{safe_name}.pdf")
             try:
                 from docx2pdf import convert  # noqa: PLC0415
                 convert(docx_path, pdf_path)
                 logger.info("PDF 转换完成：%.1f KB", os.path.getsize(pdf_path) / 1024)
                 with open(pdf_path, "rb") as f:
-                    return f.read(), "ebram_analysis.pdf"
+                    return f.read(), f"{safe_name}.pdf"
             except Exception as exc:
                 logger.warning("PDF 转换失败，降级返回 docx：%s", exc)
                 with open(docx_path, "rb") as f:
-                    return f.read(), "ebram_analysis.docx"
+                    return f.read(), f"{safe_name}.docx"
 
         # docx
         with open(docx_path, "rb") as f:
-            return f.read(), "ebram_analysis.docx"
+            return f.read(), f"{safe_name}.docx"
