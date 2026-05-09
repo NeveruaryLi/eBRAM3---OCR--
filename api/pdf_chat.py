@@ -60,11 +60,15 @@ class DocResult:
     filename: str
     summaries: list[str]
     merged_fields: dict
+    party: str = "通用"          # "甲方" | "乙方" | "通用"
     created_at: datetime = field(default_factory=datetime.utcnow)
 
 
 # session_id → 该会话中已处理文档列表（内存暂存，服务重启后清空）
 session_store: dict[str, list[DocResult]] = {}
+
+# session_id → Agent B 综合分析结果文本（用于报告生成）
+session_results_store: dict[str, str] = {}
 
 
 async def start_cleanup_task() -> None:
@@ -81,6 +85,7 @@ async def start_cleanup_task() -> None:
         ]
         for sid in expired:
             del session_store[sid]
+            session_results_store.pop(sid, None)
         if expired:
             logger.info(
                 "session_store 清理完成：删除 %d 个过期会话，当前剩余 %d 个",
@@ -336,13 +341,14 @@ def _build_agent_b_input(summaries: list[str], merged_fields: dict) -> str:
 def _build_doc_message(doc_index: int, doc: DocResult) -> str:
     """
     构造发给 Agent B 的单份材料消息（多文档综合分析时使用）。
-    格式：材料序号+文件名标注 + Markdown 摘要 + JSON 代码块。
+    格式：材料序号+文件名标注（含甲/乙方标签） + Markdown 摘要 + JSON 代码块。
     """
+    party_label = f"【{doc.party}】" if doc.party and doc.party != "通用" else ""
     filled = [(i + 1, s) for i, s in enumerate(doc.summaries) if s.strip()]
     summary_block = "\n\n".join(f"[Page {p}]\n{t}" for p, t in filled)
     fields_json = json.dumps(doc.merged_fields, ensure_ascii=False, indent=2)
     return (
-        f"以下是材料{doc_index}《{doc.filename}》的分析结果，"
+        f"以下是{party_label}材料{doc_index}《{doc.filename}》的分析结果，"
         f"包含逐页摘要和结构化提取字段：\n\n"
         f"## Document Summary ({len(filled)} pages)\n\n"
         f"{summary_block}\n\n"
@@ -510,6 +516,7 @@ async def pdf_pages_chat(
     pdf_file: UploadFile = File(...),
     conversation_id: str | None = Form(default=None),
     session_id: str | None = Form(default=None),
+    party: str = Form(default="通用"),
 ):
     """
     将 PDF 发给 PaddleOCR API，OCR 进度实时推送给前端；
@@ -541,9 +548,10 @@ async def pdf_pages_chat(
     filename = pdf_file.filename or "document.pdf"
     incoming_conv_id = conversation_id
     incoming_session_id = session_id
+    incoming_party = party if party in ("甲方", "乙方", "通用") else "通用"
     logger.info(
-        "收到 PDF：%s，大小 %d bytes，conv_id=%s，session_id=%s",
-        filename, len(pdf_bytes), incoming_conv_id, incoming_session_id,
+        "收到 PDF：%s，大小 %d bytes，conv_id=%s，session_id=%s，party=%s",
+        filename, len(pdf_bytes), incoming_conv_id, incoming_session_id, incoming_party,
     )
 
     async def stream() -> AsyncIterator[str]:
@@ -789,6 +797,7 @@ async def pdf_pages_chat(
                     filename=filename,
                     summaries=summaries,
                     merged_fields=merged_fields,
+                    party=incoming_party,
                 )
                 if incoming_session_id not in session_store:
                     session_store[incoming_session_id] = []
@@ -804,6 +813,7 @@ async def pdf_pages_chat(
                     "filename": filename,
                     "session_id": incoming_session_id,
                     "doc_index": doc_index,
+                    "party": incoming_party,
                     "success_pages": success_count,
                     "total_pages": confirmed_pages,
                     "message": f"《{filename}》处理完成，共 {success_count}/{confirmed_pages} 页",
@@ -983,11 +993,27 @@ async def session_analyze(
                         yield _sse({"type": "error", "message": f"发送材料 {doc_index} 失败：{exc}"})
                         return
 
-                # 综合分析请求
-                final_msg = (
-                    f"以上是全部 {doc_count} 份材料的完整分析结果，"
-                    f"请基于所有材料进行综合分析。"
-                )
+                # 综合分析请求 — 根据是否双方材料构造不同提示词
+                party_a_docs = [d for d in docs if d.party == "甲方"]
+                party_b_docs = [d for d in docs if d.party == "乙方"]
+
+                if party_a_docs and party_b_docs:
+                    final_msg = (
+                        f"以上是本仲裁案件的全部材料，包含：\n"
+                        f"- 甲方材料 {len(party_a_docs)} 份\n"
+                        f"- 乙方材料 {len(party_b_docs)} 份\n\n"
+                        f"请基于上述材料进行综合分析，具体要求：\n"
+                        f"1. 梳理双方争议的核心焦点\n"
+                        f"2. 对比甲乙双方的主张、证据及其关联性\n"
+                        f"3. 针对争议焦点，为仲裁庭生成一份有针对性的提问清单\n"
+                        f"4. 提问清单应涵盖事实认定、证据评估和法律适用等维度，"
+                        f"并注明每个问题的提问对象（甲方/乙方）"
+                    )
+                else:
+                    final_msg = (
+                        f"以上是全部 {doc_count} 份材料的完整分析结果，"
+                        f"请基于所有材料进行综合分析，识别争议焦点并生成针对性提问清单。"
+                    )
                 yield _sse({
                     "type": "analysis_sending",
                     "doc_index": doc_count + 1,
@@ -1009,6 +1035,10 @@ async def session_analyze(
                     logger.error("Session %s：综合分析失败：%s", session_id, exc)
                     analysis_result = f"综合分析失败：{exc}"
                     analysis_status = "failed"
+
+                # 暂存分析结果，供后续 /session/report 调用
+                if analysis_status == "success":
+                    session_results_store[session_id] = analysis_result
 
                 yield _sse({
                     "type": "analysis_result",
@@ -1032,5 +1062,58 @@ async def session_analyze(
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/session/report")
+async def session_report(
+    session_id: str = Form(...),
+    output_format: str = Form(default="pdf"),
+):
+    """
+    生成分析报告（Word 或 PDF 格式）并以附件形式返回。
+
+    参数：
+      session_id     — 必填，对应 session_store 中暂存的文档列表。
+      output_format  — "pdf"（默认）或 "docx"。
+
+    返回：
+      直接下载的文件响应（Content-Disposition: attachment）。
+    """
+    docs = session_store.get(session_id)
+    if not docs:
+        raise HTTPException(
+            status_code=404,
+            detail=f"会话 {session_id} 不存在或已过期，请重新上传文件并进行综合分析",
+        )
+
+    fmt = output_format.lower().strip()
+    if fmt not in ("pdf", "docx"):
+        fmt = "pdf"
+
+    analysis_text = session_results_store.get(session_id, "")
+
+    try:
+        from model.report_generator import generate_report  # noqa: PLC0415
+        file_bytes, filename = generate_report(analysis_text=analysis_text, output_format=fmt)
+    except Exception as exc:
+        logger.exception("报告生成失败：session_id=%s", session_id)
+        raise HTTPException(status_code=500, detail=f"报告生成失败：{exc}") from exc
+
+    if fmt == "pdf" and filename.endswith(".pdf"):
+        media_type = "application/pdf"
+    else:
+        media_type = (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+
+    from fastapi.responses import Response  # noqa: PLC0415
+    return Response(
+        content=file_bytes,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(file_bytes)),
         },
     )

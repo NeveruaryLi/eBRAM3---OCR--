@@ -72,14 +72,19 @@
 
     <!-- 文件队列面板（多 PDF 上传） -->
     <div class="file-queue-panel" id="fileQueuePanel" hidden>
-      <div class="fq-header">
+      <div class="fq-header" id="fqHeader">
         <span class="fq-title">待处理文件</span>
         <span class="fq-count" id="fqCount"></span>
+        <button class="fq-toggle" id="fqToggle" title="折叠/展开">▼</button>
       </div>
-      <div class="fq-list" id="fqList"></div>
-      <div class="fq-actions">
-        <button class="process-btn" id="processBtn" hidden>开始文档分析</button>
-        <button class="analyze-btn" id="analyzeBtn" hidden disabled>开始综合分析</button>
+      <div class="fq-body" id="fqBody">
+        <div class="fq-list" id="fqList"></div>
+        <div class="fq-actions">
+          <button class="process-btn" id="processBtn" hidden>开始文档分析</button>
+          <button class="analyze-btn" id="analyzeBtn" hidden disabled>开始综合分析</button>
+          <button class="report-btn report-btn-word" id="reportBtnWord" hidden>📄 下载 Word</button>
+          <button class="report-btn report-btn-pdf"  id="reportBtnPdf"  hidden>📥 下载 PDF</button>
+        </div>
       </div>
     </div>
 

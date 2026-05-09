@@ -44,6 +44,11 @@ const fqList         = document.getElementById('fqList');
 const fqCount        = document.getElementById('fqCount');
 const processBtn     = document.getElementById('processBtn');
 const analyzeBtn     = document.getElementById('analyzeBtn');
+const reportBtnWord  = document.getElementById('reportBtnWord');
+const reportBtnPdf   = document.getElementById('reportBtnPdf');
+const fqHeader       = document.getElementById('fqHeader');
+const fqBody         = document.getElementById('fqBody');
+const fqToggle       = document.getElementById('fqToggle');
 
 // ── 状态 ──────────────────────────────────────────────────────────────────────
 let busy = false;
@@ -57,7 +62,8 @@ let currentSessionId = null;
 
 // 多文档队列状态
 let multiSessionId = null;  // 后端 session_store key（UUID）
-let fileQueue = [];         // [{name, file, status: 'pending'|'processing'|'done'|'failed'}]
+let fileQueue = [];         // [{name, file, status: 'pending'|'processing'|'done'|'failed', party: '甲方'|'乙方'|'通用'}]
+let fqCollapsed = false;    // 文件队列面板折叠状态
 
 // ── marked.js 配置 ────────────────────────────────────────────────────────────
 marked.use({ breaks: true, gfm: true });
@@ -275,7 +281,7 @@ function addToFileQueue(files) {
       toast(`${f.name} 已在队列中`);
       continue;
     }
-    fileQueue.push({ name: f.name, file: f, status: 'pending' });
+    fileQueue.push({ name: f.name, file: f, status: 'pending', party: '甲方' });
   }
   if (fileQueue.length > 0) fileQueuePanel.hidden = false;
   renderFileQueue();
@@ -295,9 +301,34 @@ function removeFromQueue(name) {
   updateAnalyzeBtn();
 }
 
+function updateFqCount() {
+  const total = fileQueue.length;
+  if (total === 0) { fqCount.textContent = ''; return; }
+  const done       = fileQueue.filter(f => f.status === 'done').length;
+  const failed     = fileQueue.filter(f => f.status === 'failed').length;
+  const processing = fileQueue.filter(f => f.status === 'processing').length;
+  if (fqCollapsed) {
+    if (done === total)       fqCount.textContent = `${total} 份 · 全部完成`;
+    else if (failed > 0)      fqCount.textContent = `${total} 份 · ${failed} 个失败`;
+    else if (processing > 0)  fqCount.textContent = `${total} 份 · 处理中`;
+    else                      fqCount.textContent = `${total} 份`;
+  } else {
+    fqCount.textContent = `${total} 份`;
+  }
+}
+
+function setFqCollapsed(collapsed) {
+  fqCollapsed = collapsed;
+  if (fqBody)   fqBody.classList.toggle('collapsed', collapsed);
+  if (fqToggle) fqToggle.textContent = collapsed ? '▲' : '▼';
+  updateFqCount();
+}
+
+if (fqHeader) fqHeader.addEventListener('click', () => setFqCollapsed(!fqCollapsed));
+
 function renderFileQueue() {
   fqList.innerHTML = '';
-  fqCount.textContent = `${fileQueue.length} 份`;
+  updateFqCount();
 
   const statusMap = {
     pending:    { label: '待处理',  cls: 'fq-status-pending' },
@@ -323,6 +354,29 @@ function renderFileQueue() {
     statusEl.textContent = s.label;
 
     el.appendChild(nameEl);
+
+    // 党派选择器：待处理时显示下拉框，其他状态显示标签
+    if (item.status === 'pending' && !busy) {
+      const partySelect = document.createElement('select');
+      partySelect.className = 'fq-party-select';
+      partySelect.title = '选择文件所属方';
+      for (const opt of ['甲方', '乙方', '通用']) {
+        const option = document.createElement('option');
+        option.value = opt;
+        option.textContent = opt;
+        if (opt === (item.party || '甲方')) option.selected = true;
+        partySelect.appendChild(option);
+      }
+      partySelect.addEventListener('change', () => { item.party = partySelect.value; });
+      el.appendChild(partySelect);
+    } else {
+      const partyBadge = document.createElement('span');
+      const p = item.party || '通用';
+      partyBadge.className = `fq-party-badge fq-party-${p === '甲方' ? 'a' : p === '乙方' ? 'b' : 'g'}`;
+      partyBadge.textContent = p;
+      el.appendChild(partyBadge);
+    }
+
     el.appendChild(statusEl);
 
     if (item.status === 'failed') {
@@ -376,6 +430,10 @@ function updateAnalyzeBtn() {
   const shouldShow = allSettled && hasDone;
   analyzeBtn.hidden = !shouldShow;
   analyzeBtn.disabled = busy || !shouldShow;
+  // Auto-collapse the panel once all files are done processing
+  if (allSettled && fileQueue.length > 0 && !fqCollapsed) {
+    setFqCollapsed(true);
+  }
 }
 
 function retryFile(name) {
@@ -414,9 +472,13 @@ async function processPdfMulti(file) {
   showProgress('准备上传...', 0, 0);
   progressDots.innerHTML = '';
 
+  const queueItem = fileQueue.find(f => f.name === file.name);
+  const party = queueItem ? (queueItem.party || '甲方') : '甲方';
+
   const form = new FormData();
   form.append('pdf_file', file);
   form.append('session_id', sessionId);
+  form.append('party', party);
   if (currentConversationId) form.append('conversation_id', currentConversationId);
 
   const pageResults = [];
@@ -477,6 +539,50 @@ async function processPdfMulti(file) {
 }
 
 analyzeBtn.addEventListener('click', startAnalysis);
+if (reportBtnWord) reportBtnWord.addEventListener('click', () => downloadReport('docx'));
+if (reportBtnPdf)  reportBtnPdf.addEventListener('click',  () => downloadReport('pdf'));
+
+async function downloadReport(format) {
+  if (!multiSessionId) { toast('请先完成综合分析'); return; }
+
+  const btn = format === 'pdf' ? reportBtnPdf : reportBtnWord;
+  if (btn) btn.disabled = true;
+  toast('正在生成报告，请稍候...');
+
+  const form = new FormData();
+  form.append('session_id', multiSessionId);
+  form.append('output_format', format);
+
+  try {
+    const res = await fetch(`${API_BASE}/pdf/session/report`, { method: 'POST', body: form });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      toast(`报告生成失败：${err.detail || res.statusText}`);
+      return;
+    }
+
+    // 若 PDF 转换失败，服务端会降级返回 docx，以 Content-Disposition 为准
+    const cd = res.headers.get('Content-Disposition') || '';
+    const nameMatch = cd.match(/filename[^;=\n]*=["']?([^"'\n]+)["']?/);
+    const downloadName = nameMatch ? nameMatch[1] : `ebram_analysis.${format}`;
+
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = downloadName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast('报告已下载');
+  } catch (e) {
+    toast(`报告下载失败：${e.message}`);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
 
 async function startAnalysis() {
   if (!multiSessionId || busy) return;
@@ -540,6 +646,8 @@ async function startAnalysis() {
             if (ev.conversation_id) {
               updateSessionConversationId(ev.conversation_id);
             }
+            if (reportBtnWord) { reportBtnWord.hidden = false; reportBtnWord.disabled = false; }
+            if (reportBtnPdf)  { reportBtnPdf.hidden  = false; reportBtnPdf.disabled  = false; }
             break;
           case 'error':
             addMessage('ai', `❌ 综合分析出错：${ev.message}`);
@@ -1044,8 +1152,13 @@ newChatBtn.addEventListener('click', () => {
   multiSessionId = null;
   fileQueue = [];
   fileQueuePanel.hidden = true;
+  fqCollapsed = false;
+  if (fqBody) fqBody.classList.remove('collapsed');
+  if (fqToggle) fqToggle.textContent = '▼';
   updateProcessBtn();
   updateAnalyzeBtn();
+  if (reportBtnWord) reportBtnWord.hidden = true;
+  if (reportBtnPdf)  reportBtnPdf.hidden  = true;
   createNewSession();
   renderHistoryList();
 });
