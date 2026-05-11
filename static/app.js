@@ -785,8 +785,8 @@ async function startAnalysis() {
         try { ev = JSON.parse(part.slice(6)); } catch { continue; }
 
         switch (ev.type) {
-          case 'analysis_start': {
-            const party = ev.party || '';
+          case 'progress': {
+            const party = ev.result_key || '';
             showProgress(ev.message, 0, 0);
             // 为该方创建等待气泡（若尚未创建）
             if (party && !partyMsgIds[party]) {
@@ -797,12 +797,10 @@ async function startAnalysis() {
             }
             break;
           }
-          case 'analysis_result': {
-            const party = ev.party || '通用';
+          case 'result': {
+            const party = ev.result_key || '通用';
             const aiTime = Date.now();
-            const content = ev.status === 'failed'
-              ? `❌ ${party}综合分析失败：${ev.content}`
-              : ev.content;
+            const content = ev.analysis_text;
 
             // 更新或新建该方的气泡
             const msgId = partyMsgIds[party];
@@ -814,17 +812,15 @@ async function startAnalysis() {
               addMessage('ai', content, newId, aiTime);
             }
 
-            if (ev.status !== 'failed') {
-              analysisResults[party] = content;
-              showReportButtons(party);
-            }
+            analysisResults[party] = content;
+            showReportButtons(party);
             appendToCurrentSession('ai', content, aiTime);
             saveSessions();
             partyCreated[party] = true;
             break;
           }
-          case 'analysis_complete': {
-            showProgress(ev.message || '综合分析完成', 1, 1);
+          case 'analyze_complete': {
+            showProgress('综合分析完成', 1, 1);
             // 保存各方 conversation_id
             if (ev.conversation_ids) {
               conversationIdPartyA = ev.conversation_ids['甲方'] || null;
@@ -834,6 +830,9 @@ async function startAnalysis() {
           }
           case 'error':
             addMessage('ai', `❌ 综合分析出错：${ev.message}`);
+            break;
+          case 'fatal_error':
+            addMessage('ai', `❌ 分析致命错误：${ev.message}`);
             break;
         }
       }
