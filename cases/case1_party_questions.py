@@ -358,4 +358,21 @@ class Case1Handler(CaseHandler):
         session_id: str,
         session_results_store: dict[str, Any],
     ) -> list[str]:
-        raise NotImplementedError("S9: Case1Handler.get_downloadable_keys() not yet implemented")
+        """返回当前 session 已成功分析、可下载报告的 result_key 列表。
+
+        S5 BREAKING 的连锁：失败方不写入 session_results_store["results"]，
+        所以直接列 keys 即可，不需要硬编码"甲方/乙方"。
+
+        未来启用路由时建议：
+          GET /session/downloadable_keys?session_id=<sid>
+          → {"keys": [...]}
+        当前前端通过 SSE result 事件本地推断可下载方，未调用此端点；
+        此方法保留以完整实现 base.py CaseHandler 契约，供 Case 2/3 复用。
+
+        Returns:
+            list[str]: 例如 ["甲方"] 或 ["甲方", "乙方"] 或 []（全失败/未分析）
+        """
+        store_entry = session_results_store.get(session_id)
+        if not store_entry:
+            return []
+        return list(store_entry["results"].keys())
