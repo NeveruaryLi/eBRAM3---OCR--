@@ -10,9 +10,10 @@ import base64
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 import httpx
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -68,8 +69,8 @@ class DocResult:
 # session_id → 该会话中已处理文档列表（内存暂存，服务重启后清空）
 session_store: dict[str, list[DocResult]] = {}
 
-# session_id → Agent B 综合分析结果文本（用于报告生成）
-session_results_store: dict[str, str] = {}
+# session_id → 嵌套结构：case_type + created_at + results（各方分析结果）
+session_results_store: dict[str, Any] = {}
 
 # session_id → 会话元数据（case_type 等）
 # 与 session_store / session_results_store 同步 TTL 清理
@@ -1157,8 +1158,11 @@ async def session_analyze(session_id: str = Form(...)):
 
             # ── 存储结果 & 收尾 ───────────────────────────────────────────
             if results_by_party:
-                session_results_store[session_id] = results_by_party
-
+                session_results_store[session_id] = {
+                    "case_type": "case1",          # S4 起从请求参数读取
+                    "created_at": time.time(),
+                    "results": results_by_party,
+                }
             conversation_ids = {p: r["conversation_id"] for p, r in results_by_party.items()}
             yield _sse({
                 "type": "analysis_complete",
@@ -1212,10 +1216,11 @@ async def session_report(
     results = session_results_store.get(session_id)
     if not results:
         analysis_text = ""
-    elif isinstance(results, dict):
-        # 新格式：{party: {analysis_text, conversation_id}}
-        if party and party in results:
-            analysis_text = results[party]["analysis_text"]
+        report_party_label = ""
+    else:
+        party_results = results["results"]
+        if party and party in party_results:
+            analysis_text = party_results[party]["analysis_text"]
             report_party_label = party
         elif party:
             raise HTTPException(
@@ -1224,13 +1229,9 @@ async def session_report(
             )
         else:
             # 未指定方：取第一个
-            first_party, first_result = next(iter(results.items()))
+            first_party, first_result = next(iter(party_results.items()))
             analysis_text = first_result["analysis_text"]
             report_party_label = first_party
-    else:
-        # 兼容旧格式（纯字符串）
-        analysis_text = str(results)
-        report_party_label = ""
 
     # 文件名按甲乙方映射
     _PARTY_FILENAME_MAP = {
@@ -1326,13 +1327,10 @@ async def session_chat(
                 raise HTTPException(status_code=502, detail=f"无法创建 Agent B 对话：{cr.json()}")
 
             # 构造并注入上下文（甲乙双方分析结果合并为文本）
-            if isinstance(results, dict):
-                context_parts = [
-                    f"## {p}综合分析结果\n\n{r['analysis_text']}"
-                    for p, r in results.items()
-                ]
-            else:
-                context_parts = [str(results)]
+            context_parts = [
+                f"## {p}综合分析结果\n\n{r['analysis_text']}"
+                for p, r in results["results"].items()
+            ]
 
             context_text = (
                 "以下是本案件的综合分析结果，请在回答后续问题时以此为背景：\n\n"
