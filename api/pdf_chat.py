@@ -71,6 +71,10 @@ session_store: dict[str, list[DocResult]] = {}
 # session_id → Agent B 综合分析结果文本（用于报告生成）
 session_results_store: dict[str, str] = {}
 
+# session_id → 会话元数据（case_type 等）
+# 与 session_store / session_results_store 同步 TTL 清理
+session_metadata: dict[str, dict] = {}   # {sid: {"case_type": str, ...}}
+
 
 async def start_cleanup_task() -> None:
     """
@@ -87,6 +91,7 @@ async def start_cleanup_task() -> None:
         for sid in expired:
             del session_store[sid]
             session_results_store.pop(sid, None)
+            session_metadata.pop(sid, None)
         if expired:
             logger.info(
                 "session_store 清理完成：删除 %d 个过期会话，当前剩余 %d 个",
@@ -449,6 +454,24 @@ async def _ask_agent_b_with_docs(
     mr = await client.post(MESSAGE_URL, headers=agent_b_auth_headers(), json=payload)
     mr.raise_for_status()
     return extract_gptbots_reply(mr.json())
+
+
+# TODO: 引入持久化后移除 fallback "case1"，case_type 必须显式存取
+def _get_handler(session_id: str):
+    """
+    根据 session_id 查 session_metadata 或 session_results_store 获取 case_type，
+    返回对应 CaseHandler 实例。
+
+    fallback "case1" 仅用于过渡期（持久化前），
+    确保旧格式 session 不会因缺失 case_type 而崩溃。
+    引入持久化后删除 fallback 分支，要求 case_type 必须显式写入。
+    """
+    case_type = (
+        session_metadata.get(session_id, {}).get("case_type")
+        or session_results_store.get(session_id, {}).get("case_type", "case1")
+    )
+    from cases import get_handler
+    return get_handler(case_type)
 
 
 # ── 路由 ──────────────────────────────────────────────────────────────────────
