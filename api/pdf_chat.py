@@ -613,6 +613,7 @@ async def pdf_pages_chat(
     conversation_id: str | None = Form(default=None),
     session_id: str | None = Form(default=None),
     party: str = Form(default="通用"),
+    case_type: str = Form(default="case1"),
 ):
     """
     将 PDF 发给 PaddleOCR API，OCR 进度实时推送给前端；
@@ -897,6 +898,8 @@ async def pdf_pages_chat(
                 )
                 if incoming_session_id not in session_store:
                     session_store[incoming_session_id] = []
+                    # S4: 首次创建 session 时写入 case_type，后续请求不覆盖
+                    session_metadata[incoming_session_id] = {"case_type": case_type}
                 session_store[incoming_session_id].append(doc)
                 doc_index = len(session_store[incoming_session_id])
                 logger.info(
@@ -1159,7 +1162,7 @@ async def session_analyze(session_id: str = Form(...)):
             # ── 存储结果 & 收尾 ───────────────────────────────────────────
             if results_by_party:
                 session_results_store[session_id] = {
-                    "case_type": "case1",          # S4 起从请求参数读取
+                    "case_type": session_metadata.get(session_id, {}).get("case_type", "case1"),
                     "created_at": time.time(),
                     "results": results_by_party,
                 }
