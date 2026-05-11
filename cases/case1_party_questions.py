@@ -286,7 +286,72 @@ class Case1Handler(CaseHandler):
         conversation_id: str | None,
         session_results_store: dict[str, Any],
     ) -> dict[str, Any]:
-        raise NotImplementedError("S8: Case1Handler.followup_chat() not yet implemented")
+        """
+        基于已完成的综合分析进行后续文字追问。
+
+        conversation_id 为 None 时：创建独立追问 conversation，注入所有方 analysis_text
+        作为上下文，再发送用户问题。
+        conversation_id 有值时：直接复用该 conversation 发送追问。
+
+        Returns:
+            {"reply": str, "conversation_id": str}
+
+        Raises:
+            ValueError: session_id 不存在或分析尚未完成。
+            RuntimeError: Agent B 创建/调用失败（路由层转 HTTP 500）。
+        """
+        # 延迟导入避免循环依赖
+        from api.pdf_chat import _ask_agent_b  # noqa: PLC0415
+
+        store_entry = session_results_store.get(session_id)
+        if not store_entry:
+            raise ValueError("会话不存在或尚未完成综合分析，请先进行综合分析")
+
+        try:
+            conv_id: str
+
+            if conversation_id:
+                conv_id = conversation_id
+            else:
+                # 设计说明：追问 conversation 独立于分析 conversation（避免重复发送 base64
+                # document，节省 token）。通过文本方式注入双方 analysis_text 作为上下文，
+                # Agent B 拥有全局视角，可跨方回答对比类问题。
+                async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
+                    cr = await client.post(
+                        CREATE_URL,
+                        headers=agent_b_auth_headers(),
+                        json={"user_id": "session_chat_user"},
+                    )
+                    cr.raise_for_status()
+                conv_id = pick_conversation_id(cr.json())
+                if not conv_id:
+                    raise RuntimeError(f"无法创建 Agent B 对话：{cr.json()}")
+
+                context_parts = [
+                    f"## {p}综合分析结果\n\n{r['analysis_text']}"
+                    for p, r in store_entry["results"].items()
+                ]
+                context_text = (
+                    "以下是本案件的综合分析结果，请在回答后续问题时以此为背景：\n\n"
+                    + "\n\n---\n\n".join(context_parts)
+                )
+                async with httpx.AsyncClient(timeout=180.0, trust_env=False) as ctx_client:
+                    await _ask_agent_b(ctx_client, conv_id, context_text)
+                logger.info(
+                    "Session %s：已创建追问 conversation 并注入上下文，conv_id=%s",
+                    session_id, conv_id,
+                )
+
+            # 发送用户追问
+            async with httpx.AsyncClient(timeout=120.0, trust_env=False) as chat_client:
+                reply = await _ask_agent_b(chat_client, conv_id, text)
+
+        except (ValueError, RuntimeError):
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"追问失败：{exc}") from exc
+
+        return {"reply": reply, "conversation_id": conv_id}
 
     def get_downloadable_keys(
         self,

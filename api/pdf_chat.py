@@ -1133,11 +1133,8 @@ async def session_chat(
     """
     基于已完成的综合分析进行后续文字追问。
 
-    首次调用（followup_conversation_id 为空）时：
-      1. 创建新的 Agent B conversation
-      2. 将甲乙双方的分析结果以文本形式注入，作为上下文
-      3. 发送用户问题，返回回复
-
+    首次调用（followup_conversation_id 为空）时，handler 创建独立追问 conversation
+    并注入双方 analysis_text 作为上下文，再发送用户问题。
     后续调用传入 followup_conversation_id，直接复用该 conversation。
 
     参数：
@@ -1148,55 +1145,15 @@ async def session_chat(
     返回：
       {"reply": "...", "conversation_id": "..."}
     """
-    results = session_results_store.get(session_id)
-    if not results:
-        raise HTTPException(
-            status_code=404,
-            detail="会话不存在或尚未完成综合分析，请先进行综合分析",
-        )
-
+    handler = _get_handler(session_id)
     try:
-        conv_id: str
-
-        if followup_conversation_id:
-            conv_id = followup_conversation_id
-        else:
-            # 创建新 conversation 并注入上下文
-            async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
-                cr = await client.post(
-                    CREATE_URL,
-                    headers=agent_b_auth_headers(),
-                    json={"user_id": "session_chat_user"},
-                )
-                cr.raise_for_status()
-            conv_id = pick_conversation_id(cr.json())
-            if not conv_id:
-                raise HTTPException(status_code=502, detail=f"无法创建 Agent B 对话：{cr.json()}")
-
-            # 构造并注入上下文（甲乙双方分析结果合并为文本）
-            context_parts = [
-                f"## {p}综合分析结果\n\n{r['analysis_text']}"
-                for p, r in results["results"].items()
-            ]
-
-            context_text = (
-                "以下是本案件的综合分析结果，请在回答后续问题时以此为背景：\n\n"
-                + "\n\n---\n\n".join(context_parts)
-            )
-            async with httpx.AsyncClient(timeout=180.0, trust_env=False) as ctx_client:
-                await _ask_agent_b(ctx_client, conv_id, context_text)
-            logger.info(
-                "Session %s：已创建追问 conversation 并注入上下文，conv_id=%s",
-                session_id, conv_id,
-            )
-
-        # 发送用户追问
-        async with httpx.AsyncClient(timeout=120.0, trust_env=False) as chat_client:
-            reply = await _ask_agent_b(chat_client, conv_id, text)
-
-    except HTTPException:
-        raise
+        return await handler.followup_chat(
+            session_id=session_id,
+            text=text,
+            conversation_id=followup_conversation_id,
+            session_results_store=session_results_store,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"追问失败：{exc}") from exc
-
-    return {"reply": reply, "conversation_id": conv_id}
+        raise HTTPException(status_code=500, detail=f"追问失败：{exc}") from exc
