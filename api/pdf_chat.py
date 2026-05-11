@@ -1078,52 +1078,33 @@ async def session_report(
     if fmt not in ("pdf", "docx"):
         fmt = "pdf"
 
-    # 从 session_results_store 中按 party 取 analysis_text
+    # 路由层：解析 party → result_key（HTTP 关注点，不进 handler）
     results = session_results_store.get(session_id)
     if not results:
-        analysis_text = ""
-        report_party_label = ""
+        raise HTTPException(status_code=404, detail="尚无分析结果，请先完成综合分析")
+    party_results = results["results"]
+    if party and party in party_results:
+        result_key = party
+    elif party:
+        raise HTTPException(
+            status_code=404,
+            detail=f"未找到{party}的分析结果，请先完成综合分析",
+        )
     else:
-        party_results = results["results"]
-        if party and party in party_results:
-            analysis_text = party_results[party]["analysis_text"]
-            report_party_label = party
-        elif party:
-            raise HTTPException(
-                status_code=404,
-                detail=f"未找到{party}的分析结果，请先完成综合分析",
-            )
-        else:
-            # 未指定方：取第一个
-            first_party, first_result = next(iter(party_results.items()))
-            analysis_text = first_result["analysis_text"]
-            report_party_label = first_party
+        result_key = next(iter(party_results))
 
-    # 文件名按甲乙方映射
-    _PARTY_FILENAME_MAP = {
-        "甲方": "10 Questions for Party A",
-        "乙方": "10 Questions for Party B",
-        "通用": "10 Questions",
-    }
-    base_name = _PARTY_FILENAME_MAP.get(report_party_label, "ebram_analysis")
-
+    handler = _get_handler(session_id)
     try:
-        from model.report_generator import generate_report  # noqa: PLC0415
-        file_bytes, filename = generate_report(
-            analysis_text=analysis_text,
+        file_bytes, filename, media_type = await handler.generate_report(
+            session_id=session_id,
+            result_key=result_key,
             output_format=fmt,
-            base_name=base_name,
+            session_results_store=session_results_store,
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
-        logger.exception("报告生成失败：session_id=%s, party=%s", session_id, party)
         raise HTTPException(status_code=500, detail=f"报告生成失败：{exc}") from exc
-
-    if fmt == "pdf" and filename.endswith(".pdf"):
-        media_type = "application/pdf"
-    else:
-        media_type = (
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        )
 
     from fastapi.responses import Response  # noqa: PLC0415
     from urllib.parse import quote as _urlquote  # noqa: PLC0415

@@ -215,7 +215,69 @@ class Case1Handler(CaseHandler):
         output_format: str,
         session_results_store: dict[str, Any],
     ) -> tuple[bytes, str, str]:
-        raise NotImplementedError("S7: Case1Handler.generate_report() not yet implemented")
+        """生成报告，返回 (file_bytes, filename, media_type)。
+
+        Args:
+            session_id:            会话 ID。
+            result_key:            "甲方" / "乙方" / "通用"。
+            output_format:         "pdf" 或 "docx"（由路由层规范化后传入）。
+            session_results_store: 全局结果存储。
+
+        Returns:
+            (file_bytes, filename, media_type)。
+            若 output_format="pdf" 但 PDF 转换失败，report_generator 内部降级返回
+            .docx，filename 会以 ".docx" 结尾，media_type 随之调整。
+
+        Raises:
+            ValueError: session_id 不存在，或 result_key 对应方分析结果未落盘
+                        （S5 BREAKING：分析失败的方不写入 store）。
+            RuntimeError: report_generator 内部异常（路由层转 HTTP 500）。
+                          注意：路由层依赖 ValueError→400 / 其他异常→500，故此处
+                          将 report_generator 的任何异常包装成 RuntimeError，
+                          避免其内部 ValueError 被误判成业务校验失败（400）。
+        """
+        store_entry = session_results_store.get(session_id)
+        if not store_entry:
+            raise ValueError(f"会话 {session_id} 不存在或已过期")
+
+        party_results = store_entry["results"]
+        # 防御性校验：路由层通常已过滤无效 result_key，但 handler 不依赖调用方
+        if result_key not in party_results:
+            raise ValueError(
+                f"{result_key} 的分析结果不存在，可能分析失败或尚未分析该方材料"
+            )
+
+        analysis_text = party_results[result_key]["analysis_text"]
+
+        _PARTY_FILENAME_MAP = {
+            "甲方": "10 Questions for Party A",
+            "乙方": "10 Questions for Party B",
+            "通用": "10 Questions",
+        }
+        base_name = _PARTY_FILENAME_MAP.get(result_key, "ebram_analysis")
+
+        try:
+            from model.report_generator import generate_report as _gen_report  # noqa: PLC0415
+            file_bytes, filename = _gen_report(
+                analysis_text=analysis_text,
+                output_format=output_format,
+                base_name=base_name,
+            )
+        except Exception as exc:
+            logger.exception(
+                "报告生成失败：session_id=%s, result_key=%s, output_format=%s",
+                session_id, result_key, output_format,
+            )
+            raise RuntimeError(f"报告生成器异常：{exc}") from exc
+
+        if output_format == "pdf" and filename.endswith(".pdf"):
+            media_type = "application/pdf"
+        else:
+            media_type = (
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
+
+        return file_bytes, filename, media_type
 
     async def followup_chat(
         self,
