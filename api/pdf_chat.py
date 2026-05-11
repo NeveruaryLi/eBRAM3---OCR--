@@ -221,9 +221,11 @@ async def _ask_gptbots(
     conversation_id: str,
     page_num: int,
     ocr_text: str,
+    total_pages: int = 0,
 ) -> str:
     """将某页 OCR 文本发给 GPTBots，返回 Agent 回复文本。"""
-    message_text = f"【第{page_num}页】\n{ocr_text}"
+    page_header = f"【第{page_num}页 / 共{total_pages}页】" if total_pages > 0 else f"【第{page_num}页】"
+    message_text = f"{page_header}\n{ocr_text}"
     payload = {
         "conversation_id": conversation_id,
         "response_mode": "blocking",
@@ -244,6 +246,7 @@ async def _ask_gptbots_with_retry(
     conversation_id: str,
     page_num: int,
     ocr_text: str,
+    total_pages: int = 0,
 ) -> str:
     """
     带指数退避重试的 GPTBots 调用。
@@ -255,7 +258,7 @@ async def _ask_gptbots_with_retry(
     last_exc: Exception | None = None
     for attempt in range(_MAX_AGENT_RETRIES):
         try:
-            return await _ask_gptbots(client, conversation_id, page_num, ocr_text)
+            return await _ask_gptbots(client, conversation_id, page_num, ocr_text, total_pages)
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in _RETRY_STATUS and attempt < _MAX_AGENT_RETRIES - 1:
                 wait = 2 ** attempt  # 1s, 2s, 4s
@@ -823,7 +826,7 @@ async def pdf_pages_chat(
 
                     try:
                         reply = await _ask_gptbots_with_retry(
-                            agent_client, conv_id, page_num, ocr_text
+                            agent_client, conv_id, page_num, ocr_text, confirmed_pages
                         )
                         record: dict = {
                             "page": page_num,
@@ -1206,9 +1209,13 @@ async def session_report(
         analysis_text = str(results)
         report_party_label = ""
 
-    # 文件名含方标签
-    party_suffix = f"_{report_party_label}" if report_party_label else ""
-    base_name = f"ebram_analysis{party_suffix}"
+    # 文件名按甲乙方映射
+    _PARTY_FILENAME_MAP = {
+        "甲方": "10 Questions for Party A",
+        "乙方": "10 Questions for Party B",
+        "通用": "10 Questions",
+    }
+    base_name = _PARTY_FILENAME_MAP.get(report_party_label, "ebram_analysis")
 
     try:
         from model.report_generator import generate_report  # noqa: PLC0415
@@ -1229,11 +1236,18 @@ async def session_report(
         )
 
     from fastapi.responses import Response  # noqa: PLC0415
+    from urllib.parse import quote as _urlquote  # noqa: PLC0415
+    # RFC 5987: filename* supports UTF-8; plain filename= fallback uses ASCII-safe name
+    ascii_name = filename.encode("ascii", errors="replace").decode("ascii")
+    encoded_name = _urlquote(filename, safe="", encoding="utf-8")
+    content_disposition = (
+        f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{encoded_name}'
+    )
     return Response(
         content=file_bytes,
         media_type=media_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": content_disposition,
             "Content-Length": str(len(file_bytes)),
         },
     )

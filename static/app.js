@@ -231,7 +231,19 @@ function renderHistoryList() {
     title.className = 'history-title';
     title.textContent = s.title;
 
+    // 三点菜单按钮：hover 时显示，点击时弹出操作菜单
+    const menuBtn = document.createElement('button');
+    menuBtn.className = 'history-menu-btn';
+    menuBtn.title = '更多操作';
+    menuBtn.setAttribute('aria-label', '更多操作');
+    menuBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg>`;
+    menuBtn.addEventListener('click', e => {
+      e.stopPropagation();   // 防止触发 switchToSession
+      openHistoryDropdown(s.id, menuBtn, item);
+    });
+
     item.appendChild(title);
+    item.appendChild(menuBtn);
     item.addEventListener('click', () => switchToSession(s.id));
     historyList.appendChild(item);
   }
@@ -633,6 +645,98 @@ function hideAllReportButtons() {
   for (const btn of Object.values(_reportBtnMap)) {
     if (btn) { btn.hidden = true; btn.disabled = true; }
   }
+}
+
+/**
+ * 重置当前页面状态（等同于"新对话"，但不创建历史记录条目）。
+ * 供右上角重置按钮使用。
+ */
+function resetCurrentView() {
+  messagesList.innerHTML = '';
+  welcome.hidden = false;
+  hideProgress();
+  setBusy(false);
+  textInput.value = '';
+  textInput.style.height = 'auto';
+  sendBtn.disabled = true;
+  // 重置多文档会话
+  multiSessionId = null;
+  fileQueue = [];
+  fileQueuePanel.hidden = true;
+  fqCollapsed = false;
+  if (fqBody)   fqBody.classList.remove('collapsed');
+  if (fqToggle) fqToggle.textContent = '▼';
+  updateProcessBtn();
+  updateAnalyzeBtn();
+  // 重置分析状态和下载按钮
+  analysisResults = {};
+  conversationIdPartyA   = null;
+  conversationIdPartyB   = null;
+  followupConversationId = null;
+  hideAllReportButtons();
+  // 断开与历史会话的关联（不新增条目）
+  currentConversationId = null;
+  currentSessionId      = null;
+}
+
+// ── 历史记录三点下拉菜单 ─────────────────────────────────────────────────────
+
+/** 关闭所有打开的历史下拉菜单 */
+function closeAllDropdowns() {
+  document.querySelectorAll('.history-dropdown').forEach(d => d.remove());
+  document.querySelectorAll('.history-item.menu-open').forEach(el => el.classList.remove('menu-open'));
+}
+
+// 点击页面任意位置关闭菜单
+document.addEventListener('click', e => {
+  if (!e.target.closest('.history-menu-btn') && !e.target.closest('.history-dropdown')) {
+    closeAllDropdowns();
+  }
+});
+
+/**
+ * 在指定按钮旁弹出历史操作下拉菜单。
+ * @param {string} sessionId
+ * @param {HTMLElement} menuBtn
+ * @param {HTMLElement} historyItem
+ */
+function openHistoryDropdown(sessionId, menuBtn, historyItem) {
+  closeAllDropdowns();
+
+  const rect = menuBtn.getBoundingClientRect();
+  const DROPDOWN_W = 140;
+  const left = Math.max(4, rect.right - DROPDOWN_W);
+
+  const dropdown = document.createElement('div');
+  dropdown.className = 'history-dropdown';
+  dropdown.style.top  = `${rect.bottom + 4}px`;
+  dropdown.style.left = `${left}px`;
+
+  const deleteItem = document.createElement('button');
+  deleteItem.className = 'history-dropdown-item danger';
+  deleteItem.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>删除`;
+  deleteItem.addEventListener('click', e => {
+    e.stopPropagation();
+    closeAllDropdowns();
+    deleteSession(sessionId);
+  });
+
+  dropdown.appendChild(deleteItem);
+  document.body.appendChild(dropdown);
+  historyItem.classList.add('menu-open');
+}
+
+/**
+ * 删除指定历史对话（含 localStorage），若删除的是当前对话则重置视图。
+ * @param {string} id - 要删除的 session id
+ */
+function deleteSession(id) {
+  if (!confirm('确定删除这条对话记录吗？')) return;
+  const wasActive = (id === currentSessionId);
+  sessions = sessions.filter(s => s.id !== id);
+  saveSessions();
+  if (wasActive) resetCurrentView();
+  renderHistoryList();
 }
 
 async function startAnalysis() {

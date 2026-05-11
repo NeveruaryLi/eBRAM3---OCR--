@@ -88,21 +88,32 @@ def _set_para_spacing(
 
 
 def _apply_style_font(doc: Document, style_name: str, font_name: str = _FONT_CN) -> None:
-    """Patch the East Asian font on a named paragraph style."""
+    """Patch the East Asian font and force black colour on a named paragraph style."""
     try:
         style = doc.styles[style_name]
     except KeyError:
         return
     style.font.name = font_name
+    # Force black — overrides Word's built-in theme colour (e.g. blue on Heading styles)
+    style.font.color.rgb = RGBColor(0, 0, 0)
 
     rPr = style.element.get_or_add_rPr()
+
+    # Font name (East Asian)
     rFonts = rPr.find(qn("w:rFonts"))
     if rFonts is None:
         rFonts = OxmlElement("w:rFonts")
         rPr.insert(0, rFonts)
-    rFonts.set(qn("w:ascii"),   font_name)
-    rFonts.set(qn("w:hAnsi"),   font_name)
+    rFonts.set(qn("w:ascii"),    font_name)
+    rFonts.set(qn("w:hAnsi"),    font_name)
     rFonts.set(qn("w:eastAsia"), font_name)
+
+    # Colour — remove any theme-colour node and write a solid black value
+    for old in rPr.findall(qn("w:color")):
+        rPr.remove(old)
+    color_el = OxmlElement("w:color")
+    color_el.set(qn("w:val"), "000000")
+    rPr.append(color_el)
 
 
 def _configure_doc(doc: Document) -> None:
@@ -168,7 +179,7 @@ def _add_heading(doc: Document, text: str, level: int) -> None:
         para = doc.add_paragraph()
 
     run = para.add_run(text.strip())
-    _set_run_font(run, size_pt=size_pt, bold=True)
+    _set_run_font(run, size_pt=size_pt, bold=True, color_rgb=(0, 0, 0))
     _set_para_spacing(para, before_twips=before, after_twips=after)
 
 
