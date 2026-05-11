@@ -1008,174 +1008,37 @@ async def session_analyze(session_id: str = Form(...)):
     """
     多文档综合分析端点（v2）。
 
-    按甲方 / 乙方分别创建独立的 Agent B conversation，各自接收对应材料（含通用材料），
-    串行处理后 SSE 流式输出结果。全为通用材料时退回单 conversation 行为。
+    路由层只负责生命周期事件和错误边界；业务逻辑委托给 CaseHandler.analyze()。
 
-    SSE 事件：
-      {"type": "analysis_start",    "party": "甲方"|"乙方"|"通用", "message": "..."}
-      {"type": "analysis_result",   "party": "...", "content": "...", "status": "success"|"failed"}
-      {"type": "analysis_complete", "conversation_ids": {"甲方": "...", "乙方": "..."}, "message": "..."}
-      {"type": "error",             "message": "..."}
+    SSE 事件序列：
+      {"type": "analyze_start",    "session_id": "..."}
+      {"type": "progress",         "stage": "analyzing", "result_key": "...", "message": "..."}
+      {"type": "result",           "result_key": "...", "analysis_text": "...", "conversation_id": "..."}
+      {"type": "error",            "result_key": "...", "message": "..."}   # 单方失败，流继续
+      {"type": "analyze_complete", "conversation_ids": {"甲方": "...", ...}}
+      {"type": "fatal_error",      "message": "..."}                        # 致命异常，流结束
     """
-    docs = session_store.get(session_id)
+    handler = _get_handler(session_id)
 
     async def stream() -> AsyncIterator[str]:
-        if not docs:
-            yield _sse({"type": "error", "message": f"会话 {session_id} 不存在或已过期，请重新上传文件"})
+        yield _sse({"type": "analyze_start", "session_id": session_id})
+        try:
+            async for event in handler.analyze(
+                session_id=session_id,
+                session_store=session_store,
+                session_results_store=session_results_store,
+            ):
+                yield _sse({"type": event.type, **event.data})
+        except Exception as exc:
+            logger.exception("Session %s：handler.analyze() 致命错误", session_id)
+            yield _sse({"type": "fatal_error", "message": str(exc)})
             return
 
-        try:
-            # ── 按 party 分组 ──────────────────────────────────────────────
-            party_a_docs = [d for d in docs if d.party == "甲方"]
-            party_b_docs = [d for d in docs if d.party == "乙方"]
-            common_docs  = [d for d in docs if d.party == "通用"]
-
-            has_a = bool(party_a_docs)
-            has_b = bool(party_b_docs)
-
-            if has_a and has_b:
-                parties_to_process = [
-                    (
-                        "甲方",
-                        party_a_docs + common_docs,
-                        "以下是甲方（Party A）提交的全部材料分析结果，"
-                        "请基于这些材料进行综合分析：识别甲方的核心主张、"
-                        "证据优势与薄弱点，并生成针对甲方的谈判准备问题清单。",
-                    ),
-                    (
-                        "乙方",
-                        party_b_docs + common_docs,
-                        "以下是乙方（Party B）提交的全部材料分析结果，"
-                        "请基于这些材料进行综合分析：识别乙方的核心主张、"
-                        "证据优势与薄弱点，并生成针对乙方的谈判准备问题清单。",
-                    ),
-                ]
-            elif has_a:
-                parties_to_process = [
-                    (
-                        "甲方",
-                        party_a_docs + common_docs,
-                        "以下是甲方提交的全部材料分析结果，请进行综合分析，"
-                        "识别争议焦点并生成针对性提问清单。",
-                    )
-                ]
-            elif has_b:
-                parties_to_process = [
-                    (
-                        "乙方",
-                        party_b_docs + common_docs,
-                        "以下是乙方提交的全部材料分析结果，请进行综合分析，"
-                        "识别争议焦点并生成针对性提问清单。",
-                    )
-                ]
-            else:
-                # 全为通用材料 — 退回单 conversation
-                parties_to_process = [
-                    (
-                        "通用",
-                        common_docs,
-                        f"以下是全部 {len(common_docs)} 份材料的分析结果，"
-                        "请进行综合分析，识别争议焦点并生成针对性提问清单。",
-                    )
-                ]
-
-            results_by_party: dict[str, dict] = {}
-
-            # ── 串行处理每一方 ────────────────────────────────────────────
-            for party_name, party_docs, party_prompt in parties_to_process:
-                yield _sse({
-                    "type": "analysis_start",
-                    "party": party_name,
-                    "message": f"正在为{party_name}创建分析会话（{len(party_docs)} 份材料）...",
-                })
-
-                # 创建 Agent B conversation
-                try:
-                    async with httpx.AsyncClient(timeout=60.0, trust_env=False) as init_client:
-                        bcr = await init_client.post(
-                            CREATE_URL,
-                            headers=agent_b_auth_headers(),
-                            json={"user_id": "session_analyze_user"},
-                        )
-                        bcr.raise_for_status()
-                    party_conv_id = pick_conversation_id(bcr.json())
-                    if not party_conv_id:
-                        yield _sse({
-                            "type": "error",
-                            "message": f"无法为{party_name}创建 Agent B 对话：{bcr.json()}",
-                        })
-                        continue
-                    logger.info(
-                        "Session %s %s：Agent B conversation_id=%s",
-                        session_id, party_name, party_conv_id,
-                    )
-                except Exception as exc:
-                    yield _sse({"type": "error", "message": f"创建{party_name} Agent B 对话失败：{exc}"})
-                    continue
-
-                # 构造每份材料的 document item
-                # party-specific 材料保留自身标签，通用材料不标注方向
-                doc_items = [
-                    _build_doc_item(
-                        d.filename,
-                        d.summaries,
-                        d.merged_fields,
-                        d.party if d.party != "通用" else "",
-                    )
-                    for d in party_docs
-                ]
-                total_b64 = sum(len(it["base64_content"]) for it in doc_items)
-                logger.info(
-                    "Session %s %s：构造 %d 份 document item，base64 合计 %d 字节",
-                    session_id, party_name, len(doc_items), total_b64,
-                )
-
-                # 一次请求发送所有材料 + 提示词
-                analysis_result = ""
-                analysis_status = "success"
-                try:
-                    async with httpx.AsyncClient(timeout=240.0, trust_env=False) as b_client:
-                        analysis_result = await _ask_agent_b_with_docs(
-                            b_client, party_conv_id, party_prompt, doc_items
-                        )
-                    logger.info(
-                        "Session %s %s：综合分析完成，回复长度 %d 字符",
-                        session_id, party_name, len(analysis_result),
-                    )
-                except Exception as exc:
-                    logger.error("Session %s %s：综合分析失败：%s", session_id, party_name, exc)
-                    analysis_result = f"综合分析失败：{exc}"
-                    analysis_status = "failed"
-
-                results_by_party[party_name] = {
-                    "analysis_text": analysis_result,
-                    "conversation_id": party_conv_id,
-                }
-
-                yield _sse({
-                    "type": "analysis_result",
-                    "party": party_name,
-                    "content": analysis_result,
-                    "status": analysis_status,
-                })
-
-            # ── 存储结果 & 收尾 ───────────────────────────────────────────
-            if results_by_party:
-                session_results_store[session_id] = {
-                    "case_type": session_metadata.get(session_id, {}).get("case_type", "case1"),
-                    "created_at": time.time(),
-                    "results": results_by_party,
-                }
-            conversation_ids = {p: r["conversation_id"] for p, r in results_by_party.items()}
-            yield _sse({
-                "type": "analysis_complete",
-                "conversation_ids": conversation_ids,
-                "message": f"综合分析完成，共分析 {len(results_by_party)} 方材料",
-            })
-
-        except Exception as exc:
-            logger.exception("Session %s：综合分析出现未预期的错误", session_id)
-            yield _sse({"type": "error", "message": f"服务器内部错误：{exc}"})
+        conversation_ids = {
+            party: r["conversation_id"]
+            for party, r in session_results_store.get(session_id, {}).get("results", {}).items()
+        }
+        yield _sse({"type": "analyze_complete", "conversation_ids": conversation_ids})
 
     return StreamingResponse(
         stream(),

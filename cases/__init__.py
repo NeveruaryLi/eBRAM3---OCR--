@@ -5,28 +5,22 @@ cases/__init__.py — Case 注册表 + Handler 工厂函数
     1. 在 cases/ 下新建实现文件（如 case2_mediator_briefing.py）
     2. 在 REGISTRY 中注册对应的 case_type 字符串
 路由层通过 get_handler(case_type) 获取 Handler，不感知具体实现类。
-
-待办：
-    S10 完成 Case1Handler 实现后，在 REGISTRY 中注册 "case1"。
 """
 from __future__ import annotations
 
 from cases.base import CaseHandler
+from cases.case1_party_questions import Case1Handler
 
 # ── Case 注册表 ───────────────────────────────────────────────────────────────
 # key:   case_type 字符串，与 session_metadata["case_type"] 及前端传参保持一致
 # value: CaseHandler 的具体实现类（未实例化）
-#
-# TODO(S10): 注册 Case1Handler
-#   from cases.case1_party_questions import Case1Handler
-#   REGISTRY["case1"] = Case1Handler
 #
 # TODO(Case 2): 注册 Case2Handler
 #   from cases.case2_mediator_briefing import Case2Handler
 #   REGISTRY["case2"] = Case2Handler
 
 REGISTRY: dict[str, type[CaseHandler]] = {
-    # 待 S10 填入
+    "case1": Case1Handler,
 }
 
 
