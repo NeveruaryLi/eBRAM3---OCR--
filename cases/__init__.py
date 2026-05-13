@@ -10,17 +10,15 @@ from __future__ import annotations
 
 from cases.base import CaseHandler
 from cases.case1_party_questions import Case1Handler
+from cases.case2_mediator_briefing import Case2MediatorBriefingHandler
 
 # ── Case 注册表 ───────────────────────────────────────────────────────────────
 # key:   case_type 字符串，与 session_metadata["case_type"] 及前端传参保持一致
 # value: CaseHandler 的具体实现类（未实例化）
-#
-# TODO(Case 2): 注册 Case2Handler
-#   from cases.case2_mediator_briefing import Case2Handler
-#   REGISTRY["case2"] = Case2Handler
 
 REGISTRY: dict[str, type[CaseHandler]] = {
     "case1": Case1Handler,
+    "case2": Case2MediatorBriefingHandler,
 }
 
 
