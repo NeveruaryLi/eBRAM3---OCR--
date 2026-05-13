@@ -17,7 +17,25 @@
       justify-content: center;
       padding: 2rem 1.5rem;
       gap: 0;
+      position: relative;
     }
+    /* P5: subtle radial glow — depth signal without distraction */
+    .sel-page::before {
+      content: '';
+      position: fixed;
+      top: 20%;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 700px;
+      height: 500px;
+      background: radial-gradient(ellipse at center, rgba(37,99,235,0.07) 0%, transparent 65%);
+      pointer-events: none;
+      z-index: 0;
+    }
+    :root.light .sel-page::before {
+      background: radial-gradient(ellipse at center, rgba(29,78,216,0.04) 0%, transparent 65%);
+    }
+    .sel-page > * { position: relative; z-index: 1; }
 
     .sel-header {
       display: flex;
@@ -89,9 +107,24 @@
       cursor: pointer;
     }
     .sel-card:hover {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 1px var(--accent), 0 8px 28px rgba(0,0,0,0.18);
       transform: translateY(-2px);
+    }
+    /* P2+P8: per-card color identity on hover */
+    .sel-card-1:hover {
+      border-color: #93c5fd;
+      box-shadow: 0 0 0 1px rgba(96,165,250,0.35), 0 8px 32px rgba(0,0,0,0.45);
+    }
+    .sel-card-2:hover {
+      border-color: #86efac;
+      box-shadow: 0 0 0 1px rgba(74,222,128,0.35), 0 8px 32px rgba(0,0,0,0.45);
+    }
+    :root.light .sel-card-1:hover {
+      border-color: #1B4080;
+      box-shadow: 0 0 0 1px rgba(27,64,128,0.25), 0 6px 20px rgba(0,0,0,0.10);
+    }
+    :root.light .sel-card-2:hover {
+      border-color: #2E5D3B;
+      box-shadow: 0 0 0 1px rgba(46,93,59,0.25),  0 6px 20px rgba(0,0,0,0.10);
     }
 
     .sel-card-badge {
@@ -173,10 +206,10 @@
       opacity: 0.6;
     }
 
-    /* theme btn (reuse from app) */
+    /* theme btn (P6: align with .theme-btn in style.css) */
     .sel-theme-btn {
-      width: 32px; height: 32px;
-      border-radius: 8px;
+      width: 28px; height: 28px;
+      border-radius: var(--radius-xs);
       border: 1px solid var(--border);
       background: var(--surface);
       color: var(--text-muted);
@@ -249,7 +282,7 @@
   <div class="sel-cards">
 
     <!-- Case 1 -->
-    <a class="sel-card" href="/case1">
+    <a class="sel-card sel-card-1" href="/case1">
       <span class="sel-card-badge sel-badge-1">Case 1</span>
       <div class="sel-card-icon sel-icon-1">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -268,7 +301,7 @@
     </a>
 
     <!-- Case 2 -->
-    <a class="sel-card" href="/case2">
+    <a class="sel-card sel-card-2" href="/case2">
       <span class="sel-card-badge sel-badge-2">Case 2</span>
       <div class="sel-card-icon sel-icon-2">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
