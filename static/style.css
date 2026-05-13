@@ -895,3 +895,251 @@ html, body {
   background: #2E5D3B;
   color: #ffffff;
 }
+
+/* ── Selection Page ──────────────────────────────────────────────────────── */
+/* ── Selection page layout ── */
+.sel-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 1.5rem;
+  gap: 0;
+  position: relative;
+}
+/* P5: subtle radial glow — depth signal without distraction */
+.sel-page::before {
+  content: '';
+  position: fixed;
+  top: 20%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 700px;
+  height: 500px;
+  background: radial-gradient(ellipse at center, rgba(37,99,235,0.07) 0%, transparent 65%);
+  pointer-events: none;
+  z-index: 0;
+}
+:root.light .sel-page::before {
+  background: radial-gradient(ellipse at center, rgba(29,78,216,0.04) 0%, transparent 65%);
+}
+.sel-page > * { position: relative; z-index: 1; }
+
+.sel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  max-width: 1040px;    /* P7: aligned with .sel-cards */
+  margin-bottom: 3.5rem;
+}
+
+.sel-logo-wrap { display: flex; align-items: baseline; gap: 0.55rem; }
+.sel-logo {
+  font-family: var(--font);
+  font-size: 1.55rem;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  color: var(--text);
+}
+.sel-logo .logo-mark {
+  color: var(--accent);
+  font-weight: 800;
+}
+.sel-logo-sub {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+/* hero */
+.sel-hero {
+  text-align: center;
+  margin-bottom: 2.75rem;
+}
+.sel-hero h1 {
+  font-family: var(--font);
+  font-size: clamp(1.9rem, 4vw, 2.6rem);
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.5px;
+  margin: 0 0 0.65rem;
+  line-height: 1.2;
+}
+.sel-hero p {
+  font-size: 0.93rem;
+  color: var(--text-muted);
+  margin: 0;
+  line-height: 1.6;
+}
+
+/* cards */
+.sel-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));  /* P7: was repeat(2,1fr) */
+  gap: 1.25rem;
+  width: 100%;
+  max-width: 1040px;    /* P7: was 760px */
+}
+
+.sel-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1.75rem 1.75rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  text-decoration: none;
+  transition: border-color 0.18s, box-shadow 0.18s, transform 0.18s;
+  cursor: pointer;
+}
+.sel-card:hover {
+  transform: translateY(-2px);
+}
+/* P2+P8: per-card color identity on hover */
+.sel-card-1:hover {
+  border-color: #93c5fd;
+  box-shadow: 0 0 0 1px rgba(96,165,250,0.35), 0 8px 32px rgba(0,0,0,0.45);
+}
+.sel-card-2:hover {
+  border-color: #86efac;
+  box-shadow: 0 0 0 1px rgba(74,222,128,0.35), 0 8px 32px rgba(0,0,0,0.45);
+}
+:root.light .sel-card-1:hover {
+  border-color: #1B4080;
+  box-shadow: 0 0 0 1px rgba(27,64,128,0.25), 0 6px 20px rgba(0,0,0,0.10);
+}
+:root.light .sel-card-2:hover {
+  border-color: #2E5D3B;
+  box-shadow: 0 0 0 1px rgba(46,93,59,0.25),  0 6px 20px rgba(0,0,0,0.10);
+}
+
+.sel-card-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.22em 0.65em;
+  border-radius: 4px;
+  width: fit-content;
+}
+.sel-badge-1 {
+  background: rgba(96,165,250,0.15);
+  color: #93c5fd;
+}
+.sel-badge-2 {
+  background: rgba(74,222,128,0.15);
+  color: #86efac;
+}
+:root.light .sel-badge-1 {
+  background: rgba(27,64,128,0.09);
+  color: #1B4080;
+  border: 1px solid rgba(27,64,128,0.22);
+}
+:root.light .sel-badge-2 {
+  background: rgba(46,93,59,0.09);
+  color: #2E5D3B;
+  border: 1px solid rgba(46,93,59,0.22);
+}
+
+.sel-card-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.sel-icon-1 { background: rgba(96,165,250,0.12); color: #60a5fa; }
+.sel-icon-2 { background: rgba(74,222,128,0.12); color: #4ade80; }
+:root.light .sel-icon-1 { background: rgba(27,64,128,0.09); color: #1B4080; }
+:root.light .sel-icon-2 { background: rgba(46,93,59,0.09); color: #2E5D3B; }
+
+.sel-card-title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+  line-height: 1.3;
+}
+.sel-card-desc {
+  font-size: 0.845rem;
+  color: var(--text-muted);
+  line-height: 1.6;
+  margin: 0;
+  flex: 1;
+}
+
+.sel-card-enter {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--accent);
+  margin-top: 0.25rem;
+  transition: gap 0.15s;
+}
+.sel-card:hover .sel-card-enter { gap: 0.6rem; }
+
+.sel-footer {
+  margin-top: 2.5rem;
+  font-size: 0.75rem;
+  color: var(--text-subtle, var(--text-muted));
+  opacity: 0.6;
+}
+
+/* theme btn (P6: align with .theme-btn in style.css) */
+.sel-theme-btn {
+  width: 28px; height: 28px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.sel-theme-btn:hover { background: var(--hover); color: var(--text); }
+.sel-theme-btn .icon-sun { display: none; }
+:root.light .sel-theme-btn .icon-moon { display: none; }
+:root.light .sel-theme-btn .icon-sun  { display: block; }
+
+/* ── P3: focus-visible (a11y) ── */
+.sel-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 14px;
+}
+.sel-theme-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ── P10: entrance animation ── */
+@keyframes sel-fade-up {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.sel-hero {
+  animation: sel-fade-up 0.32s cubic-bezier(0.16,1,0.3,1) both;
+}
+.sel-card {
+  animation: sel-fade-up 0.32s cubic-bezier(0.16,1,0.3,1) both;
+}
+.sel-cards .sel-card:nth-child(1) { animation-delay: 0.08s; }
+.sel-cards .sel-card:nth-child(2) { animation-delay: 0.16s; }
+@media (prefers-reduced-motion: reduce) {
+  .sel-hero, .sel-card { animation: none; }
+}
+
+@media (max-width: 560px) {
+  .sel-cards { grid-template-columns: 1fr; }
+  .sel-hero h1 { font-size: 1.6rem; }
+}
