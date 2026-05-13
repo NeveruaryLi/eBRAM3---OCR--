@@ -357,8 +357,8 @@ html, body {
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
 }
-.wc-icon-upload  { background: rgba(29,78,216,0.10);  color: #1B4080; }
-.wc-icon-analyze { background: rgba(46,93,59,0.10);   color: #2E5D3B; }
+.wc-icon-upload  { background: rgba(96,165,250,0.12);  color: #93c5fd; }  /* fix: was #1B4080, invisible on dark bg */
+.wc-icon-analyze { background: rgba(74,222,128,0.10);  color: #86efac; }  /* fix: was #2E5D3B, invisible on dark bg */
 .wc-icon-chat    { background: rgba(107,114,128,0.10); color: var(--text-muted); }
 :root.light .wc-icon-upload  { background: rgba(27,64,128,0.09);  color: #1B4080; }
 :root.light .wc-icon-analyze { background: rgba(46,93,59,0.09);   color: #2E5D3B; }
