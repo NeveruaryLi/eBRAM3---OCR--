@@ -49,8 +49,20 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/")
 async def index():
-    """根路由返回前端 HTML 页面。"""
+    """根路由：返回场景选择页。"""
     return FileResponse("static/index.html")
+
+
+@app.get("/case1")
+async def case1():
+    """Case 1：双方争议分析页面。"""
+    return FileResponse("static/case1.html")
+
+
+@app.get("/case2")
+async def case2():
+    """Case 2：调解员简报页面（前端占位，后端开发中）。"""
+    return FileResponse("static/case2.html")
 
 
 if __name__ == "__main__":

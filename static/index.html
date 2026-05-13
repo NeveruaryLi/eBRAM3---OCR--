@@ -7,144 +7,274 @@
   <link rel="stylesheet" href="/static/style.css" />
   <link rel="preload" href="/static/fonts/outfit-400.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/static/fonts/outfit-600.woff2" as="font" type="font/woff2" crossorigin>
-  <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+  <style>
+    /* ── Selection page layout ── */
+    .sel-page {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem 1.5rem;
+      gap: 0;
+    }
+
+    .sel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      max-width: 760px;
+      margin-bottom: 3.5rem;
+    }
+
+    .sel-logo-wrap { display: flex; align-items: baseline; gap: 0.55rem; }
+    .sel-logo {
+      font-family: var(--font);
+      font-size: 1.55rem;
+      font-weight: 600;
+      letter-spacing: -0.5px;
+      color: var(--text);
+    }
+    .sel-logo .logo-mark {
+      color: var(--accent);
+      font-weight: 700;
+    }
+    .sel-logo-sub {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      letter-spacing: 0.02em;
+    }
+
+    /* hero */
+    .sel-hero {
+      text-align: center;
+      margin-bottom: 2.75rem;
+    }
+    .sel-hero h1 {
+      font-family: var(--font);
+      font-size: clamp(1.9rem, 4vw, 2.6rem);
+      font-weight: 600;
+      color: var(--text);
+      letter-spacing: -0.5px;
+      margin: 0 0 0.65rem;
+      line-height: 1.2;
+    }
+    .sel-hero p {
+      font-size: 0.93rem;
+      color: var(--text-muted);
+      margin: 0;
+      line-height: 1.6;
+    }
+
+    /* cards */
+    .sel-cards {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 1.25rem;
+      width: 100%;
+      max-width: 760px;
+    }
+
+    .sel-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 1.75rem 1.75rem 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.9rem;
+      text-decoration: none;
+      transition: border-color 0.18s, box-shadow 0.18s, transform 0.18s;
+      cursor: pointer;
+    }
+    .sel-card:hover {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent), 0 8px 28px rgba(0,0,0,0.18);
+      transform: translateY(-2px);
+    }
+
+    .sel-card-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 0.22em 0.65em;
+      border-radius: 4px;
+      width: fit-content;
+    }
+    .sel-badge-1 {
+      background: rgba(96,165,250,0.15);
+      color: #93c5fd;
+    }
+    .sel-badge-2 {
+      background: rgba(74,222,128,0.15);
+      color: #86efac;
+    }
+    :root.light .sel-badge-1 {
+      background: rgba(27,64,128,0.09);
+      color: #1B4080;
+      border: 1px solid rgba(27,64,128,0.22);
+    }
+    :root.light .sel-badge-2 {
+      background: rgba(46,93,59,0.09);
+      color: #2E5D3B;
+      border: 1px solid rgba(46,93,59,0.22);
+    }
+
+    .sel-card-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .sel-icon-1 { background: rgba(96,165,250,0.12); color: #60a5fa; }
+    .sel-icon-2 { background: rgba(74,222,128,0.12); color: #4ade80; }
+    :root.light .sel-icon-1 { background: rgba(27,64,128,0.09); color: #1B4080; }
+    :root.light .sel-icon-2 { background: rgba(46,93,59,0.09); color: #2E5D3B; }
+
+    .sel-card-title {
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: var(--text);
+      margin: 0;
+      line-height: 1.3;
+    }
+    .sel-card-desc {
+      font-size: 0.845rem;
+      color: var(--text-muted);
+      line-height: 1.6;
+      margin: 0;
+      flex: 1;
+    }
+
+    .sel-card-enter {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--accent);
+      margin-top: 0.25rem;
+      transition: gap 0.15s;
+    }
+    .sel-card:hover .sel-card-enter { gap: 0.6rem; }
+
+    .sel-footer {
+      margin-top: 2.5rem;
+      font-size: 0.75rem;
+      color: var(--text-subtle, var(--text-muted));
+      opacity: 0.6;
+    }
+
+    /* theme btn (reuse from app) */
+    .sel-theme-btn {
+      width: 32px; height: 32px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text-muted);
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .sel-theme-btn:hover { background: var(--hover); color: var(--text); }
+    .sel-theme-btn .icon-sun { display: none; }
+    :root.light .sel-theme-btn .icon-moon { display: none; }
+    :root.light .sel-theme-btn .icon-sun  { display: block; }
+
+    @media (max-width: 560px) {
+      .sel-cards { grid-template-columns: 1fr; }
+      .sel-hero h1 { font-size: 1.6rem; }
+    }
+  </style>
 </head>
 <body>
 
-<div class="layout">
+<div class="sel-page">
 
-  <!-- ── 侧边栏 ── -->
-  <nav class="sidebar">
-
-    <!-- Logo 行 + 主题切换 -->
-    <div class="sidebar-top">
-      <div class="logo-wrap">
-        <div class="logo"><span class="logo-mark">e</span>BRAM</div>
-        <div class="logo-sub">AI 文档助手</div>
-      </div>
-      <button class="theme-btn" id="themeBtn" title="切换主题" aria-label="切换深色/浅色主题">
-        <svg class="icon-moon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-        <svg class="icon-sun"  width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-      </button>
+  <!-- header row -->
+  <div class="sel-header">
+    <div class="sel-logo-wrap">
+      <div class="sel-logo"><span class="logo-mark">e</span>BRAM</div>
+      <div class="sel-logo-sub">AI 文档助手</div>
     </div>
-
-    <!-- 新对话 -->
-    <button class="new-chat-btn" id="newChatBtn">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-      新对话
+    <button class="sel-theme-btn" id="themeBtn" title="切换主题" aria-label="切换深色/浅色主题">
+      <svg class="icon-moon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      <svg class="icon-sun"  width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
     </button>
-
-    <!-- 历史记录区（Feature 1）-->
-    <div class="history-section">
-      <div class="sidebar-label" id="historyLabel">最近对话</div>
-      <!-- 动态渲染：无对话时显示使用提示，有对话时显示列表 -->
-      <div class="history-list" id="historyList"></div>
-    </div>
-
-  </nav>
-
-  <!-- ── 主区域 ── -->
-  <main class="main">
-
-    <div class="messages-wrap" id="messagesWrap">
-
-      <!-- 欢迎页 (C1-4) -->
-      <div class="welcome" id="welcome">
-        <div class="welcome-badge">Case 1 · 双方争议分析</div>
-        <h1>文档智能分析</h1>
-        <p>上传甲乙双方 PDF 材料，AI 逐页解析并输出结构化综合报告</p>
-        <div class="welcome-cards">
-          <div class="welcome-card">
-            <div class="wc-icon-wrap wc-icon-upload">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/>
-              </svg>
-            </div>
-            <div><strong>上传材料</strong><small>点击或拖拽 PDF 至页面，支持批量</small></div>
-          </div>
-          <div class="welcome-card">
-            <div class="wc-icon-wrap wc-icon-analyze">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-              </svg>
-            </div>
-            <div><strong>综合分析</strong><small>Agent A 逐页解析，生成双方对比报告</small></div>
-          </div>
-          <div class="welcome-card">
-            <div class="wc-icon-wrap wc-icon-chat">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
-              </svg>
-            </div>
-            <div><strong>深度追问</strong><small>针对分析内容进行后续对话</small></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="messages-list" id="messagesList"></div>
-    </div>
-
-    <!-- 文件队列面板（多 PDF 上传） -->
-    <div class="file-queue-panel" id="fileQueuePanel" hidden>
-      <div class="fq-header" id="fqHeader">
-        <span class="fq-title">待处理文件</span>
-        <span class="fq-count" id="fqCount"></span>
-        <button class="fq-toggle" id="fqToggle" title="折叠/展开">▼</button>
-      </div>
-      <div class="fq-body" id="fqBody">
-        <div class="fq-list" id="fqList"></div>
-        <div class="fq-actions">
-          <button class="process-btn" id="processBtn" hidden>开始文档分析</button>
-          <button class="analyze-btn" id="analyzeBtn" hidden disabled>开始综合分析</button>
-          <!-- 甲方报告 -->
-          <button class="report-btn report-btn-word" id="reportBtnWordA" hidden>📄 甲方 Word</button>
-          <button class="report-btn report-btn-pdf"  id="reportBtnPdfA"  hidden>📥 甲方 PDF</button>
-          <!-- 乙方报告 -->
-          <button class="report-btn report-btn-word" id="reportBtnWordB" hidden>📄 乙方 Word</button>
-          <button class="report-btn report-btn-pdf"  id="reportBtnPdfB"  hidden>📥 乙方 PDF</button>
-          <!-- 通用报告（全为通用材料时使用） -->
-          <button class="report-btn report-btn-word" id="reportBtnWordG" hidden>📄 下载 Word</button>
-          <button class="report-btn report-btn-pdf"  id="reportBtnPdfG"  hidden>📥 下载 PDF</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 进度面板 -->
-    <div class="progress-panel" id="progressPanel" hidden>
-      <div class="progress-top">
-        <span class="progress-stage" id="progressStage">准备中...</span>
-        <span class="progress-ratio" id="progressRatio"></span>
-      </div>
-      <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
-      <div class="progress-dots" id="progressDots"></div>
-    </div>
-
-    <!-- 输入区域 -->
-    <div class="input-area">
-      <div class="input-box" id="inputBox">
-        <label class="attach-btn" for="fileInput" title="上传 PDF 文档">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
-        </label>
-        <input type="file" id="fileInput" accept=".pdf" multiple hidden />
-        <textarea id="textInput" placeholder="发送消息，或拖拽 PDF 文件到页面..." rows="1"></textarea>
-        <button class="send-btn" id="sendBtn" disabled title="发送 (Enter)">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-        </button>
-      </div>
-      <div class="input-footer">eBRAM AI 可能出现错误，重要内容请自行核实 &nbsp;·&nbsp; Enter 发送 &nbsp;·&nbsp; Shift+Enter 换行</div>
-    </div>
-
-  </main>
-</div>
-
-<!-- 拖拽蒙层 -->
-<div class="drag-overlay" id="dragOverlay" hidden>
-  <div class="drag-box">
-    <div class="drag-icon">📄</div>
-    <div class="drag-text">松开鼠标上传 PDF</div>
   </div>
+
+  <!-- hero -->
+  <div class="sel-hero">
+    <h1>选择分析场景</h1>
+    <p>上传 PDF 材料，AI 自动解析并生成结构化报告</p>
+  </div>
+
+  <!-- case cards -->
+  <div class="sel-cards">
+
+    <!-- Case 1 -->
+    <a class="sel-card" href="/case1">
+      <span class="sel-card-badge sel-badge-1">Case 1</span>
+      <div class="sel-card-icon sel-icon-1">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+          <circle cx="9" cy="7" r="4"/>
+          <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+          <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+        </svg>
+      </div>
+      <div class="sel-card-title">双方争议分析</div>
+      <p class="sel-card-desc">上传甲乙双方 PDF 材料，AI 逐页解析并输出各方立场的结构化对比报告，支持深度追问。</p>
+      <span class="sel-card-enter">
+        进入分析
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+      </span>
+    </a>
+
+    <!-- Case 2 -->
+    <a class="sel-card" href="/case2">
+      <span class="sel-card-badge sel-badge-2">Case 2</span>
+      <div class="sel-card-icon sel-icon-2">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="16" y1="13" x2="8" y2="13"/>
+          <line x1="16" y1="17" x2="8" y2="17"/>
+          <polyline points="10 9 9 9 8 9"/>
+        </svg>
+      </div>
+      <div class="sel-card-title">调解员简报</div>
+      <p class="sel-card-desc">上传甲乙双方及共用材料（共 7 份 PDF），AI 综合解析并为调解员生成结构化简报文件。</p>
+      <span class="sel-card-enter">
+        进入分析
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+      </span>
+    </a>
+
+  </div>
+
+  <div class="sel-footer">eBRAM AI 可能出现错误，重要内容请自行核实</div>
+
 </div>
 
-<script src="/static/app.js"></script>
+<script>
+  // ── 主题切换（复用同一逻辑）──
+  const themeBtn = document.getElementById('themeBtn');
+  const saved = localStorage.getItem('theme');
+  if (saved === 'light') document.documentElement.classList.add('light');
+
+  themeBtn.addEventListener('click', () => {
+    const isLight = document.documentElement.classList.toggle('light');
+    localStorage.setItem('theme', isLight ? 'light' : 'dark');
+  });
+</script>
 </body>
 </html>
