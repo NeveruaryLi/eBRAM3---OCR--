@@ -32,13 +32,13 @@
     .sel-logo {
       font-family: var(--font);
       font-size: 1.55rem;
-      font-weight: 600;
+      font-weight: 800;
       letter-spacing: -0.5px;
       color: var(--text);
     }
     .sel-logo .logo-mark {
       color: var(--accent);
-      font-weight: 700;
+      font-weight: 800;
     }
     .sel-logo-sub {
       font-size: 0.78rem;
@@ -188,6 +188,34 @@
     .sel-theme-btn .icon-sun { display: none; }
     :root.light .sel-theme-btn .icon-moon { display: none; }
     :root.light .sel-theme-btn .icon-sun  { display: block; }
+
+    /* ── P3: focus-visible (a11y) ── */
+    .sel-card:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 3px;
+      border-radius: 14px;
+    }
+    .sel-theme-btn:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    /* ── P10: entrance animation ── */
+    @keyframes sel-fade-up {
+      from { opacity: 0; transform: translateY(14px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .sel-hero {
+      animation: sel-fade-up 0.32s cubic-bezier(0.16,1,0.3,1) both;
+    }
+    .sel-card {
+      animation: sel-fade-up 0.32s cubic-bezier(0.16,1,0.3,1) both;
+    }
+    .sel-cards .sel-card:nth-child(1) { animation-delay: 0.08s; }
+    .sel-cards .sel-card:nth-child(2) { animation-delay: 0.16s; }
+    @media (prefers-reduced-motion: reduce) {
+      .sel-hero, .sel-card { animation: none; }
+    }
 
     @media (max-width: 560px) {
       .sel-cards { grid-template-columns: 1fr; }
