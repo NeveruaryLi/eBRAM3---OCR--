@@ -2,12 +2,12 @@
 cases/case2_mediator_briefing.py — Case 2 Handler 实现
 
 案件类型：调解员简报生成（Mediator Briefing）
-输入：甲方×3 + 乙方×3 + 共用×1，共 7 份 PDF
+输入：任意数量 PDF，前端上传时由用户指定 party（甲方 / 乙方 / 通用）
 
 处理流程：
-  Phase 1 — OCR（复用 Agent A 逐页提取）：7 份 PDF 依次抽取文本，存入 session_store
-  Phase 2 — 合并 + Agent C 综合分析：
-            将甲方材料、乙方材料、共用材料分别合并为 3 份 Markdown，
+  Phase 1 — OCR（复用 Agent A 逐页提取）：所有 PDF 依次抽取文本，存入 session_store
+  Phase 2 — 按 party 分组合并 → Agent C 综合分析：
+            甲方 / 乙方 / 通用 各组材料分别合并为 1 份 Markdown（最多 3 份），
             一次性发送给 Agent C 生成调解员简报，
             结果以 result_key="调解员简报" 写入 session_results_store
 
@@ -20,6 +20,8 @@ SSE 事件 data schema（analyze 产出）：
 """
 from __future__ import annotations
 
+import base64
+import json
 import logging
 import time
 from typing import Any, AsyncGenerator
@@ -30,48 +32,23 @@ from cases.base import CaseHandler, SseEvent
 from model.config import (
     AGENT_C_API_KEY,
     CREATE_URL,
+    MESSAGE_URL,
     agent_c_auth_headers,
     pick_conversation_id,
 )
+from model.utils import extract_gptbots_reply
 
 logger = logging.getLogger(__name__)
 
 # 调解员简报的唯一下载键
 _BRIEFING_KEY = "调解员简报"
 
-# Case 2 固定文件命名前缀约定（前端上传时应按此命名）
-# UC2_0 = 共用谈判结果材料
-# UC2_1 = 甲乙方调解意向申请表
-# UC2_2 = 甲乙方邮件/信函
-# UC2_3 = 甲乙方证据提交
-_PARTY_A_PREFIXES = ("UC2_1_mediation_intake_form (Party A)",
-                     "UC2_2_email_from_Party_A",
-                     "UC2_3_exihibit_submission (Party A)")
-_PARTY_B_PREFIXES = ("UC2_1_mediation_intake_form (Party B)",
-                     "UC2_2_letter_from_Party_B",
-                     "UC2_3_exihibit_submission (Party B)")
-_COMMON_PREFIXES  = ("UC2_0",)
-
-
-def _classify_filename(filename: str) -> str:
-    """
-    根据文件名前缀判断所属方。
-    返回 "甲方" / "乙方" / "通用"；无法识别时返回 "通用"。
-    """
-    for prefix in _PARTY_A_PREFIXES:
-        if filename.startswith(prefix):
-            return "甲方"
-    for prefix in _PARTY_B_PREFIXES:
-        if filename.startswith(prefix):
-            return "乙方"
-    return "通用"
-
 
 class Case2MediatorBriefingHandler(CaseHandler):
     """Case 2：调解员简报生成。
 
-    - 7 份 PDF（甲×3、乙×3、共×1）通过文件名前缀自动分组
-    - Agent C 一次性接收三方合并材料，生成完整调解员简报
+    - 任意数量 PDF，由前端 UI 指定 party（甲方 / 乙方 / 通用）
+    - 按 party 分组合并后，Agent C 一次性接收最多 3 份合并材料，生成完整调解员简报
     - 仅产出一个 result_key="调解员简报"
     - 报告下载：单份调解员简报（Word / PDF）
     """
@@ -83,13 +60,13 @@ class Case2MediatorBriefingHandler(CaseHandler):
         session_results_store: dict[str, Any],
     ) -> AsyncGenerator[SseEvent, None]:
         """
-        综合分析 7 份材料并生成调解员简报。
+        按 party 分组合并材料并调用 Agent C 生成调解员简报。
 
-        Phase 1：逐文件 OCR 提取（复用 session_store 中已有逐页摘要）
-        Phase 2：合并三方材料 → Agent C → 写入 session_results_store
+        Phase 1：读取 session_store 中已有的逐页摘要（OCR + Agent A 已完成）
+        Phase 2：按 party 分组 → 合并为最多 3 份 md → Agent C → 写入 session_results_store
 
         Raises:
-            ValueError: AGENT_C_API_KEY 未配置、session_id 不存在或文件数量不足。
+            ValueError: AGENT_C_API_KEY 未配置或 session_id 不存在。
         """
         # ── 前置校验 ──────────────────────────────────────────────────────
         if not AGENT_C_API_KEY:
@@ -101,34 +78,26 @@ class Case2MediatorBriefingHandler(CaseHandler):
         if not docs:
             raise ValueError(f"会话 {session_id} 不存在或已过期，请重新上传文件")
 
-        # 延迟导入避免循环依赖
-        from api.pdf_chat import _build_doc_item  # noqa: PLC0415
+        # ── Phase 1：按 doc.party 统计（用于日志 + 进度提示）────────────────
+        party_a_docs = [d for d in docs if d.party == "甲方"]
+        party_b_docs = [d for d in docs if d.party == "乙方"]
+        common_docs  = [d for d in docs if d.party == "通用"]
 
-        # ── Phase 1：按文件名前缀自动分组 ─────────────────────────────────
+        logger.info(
+            "Session %s Case2：甲方 %d 份，乙方 %d 份，共用 %d 份，合计 %d 份",
+            session_id, len(party_a_docs), len(party_b_docs), len(common_docs), len(docs),
+        )
+
         yield SseEvent(
             type="progress",
             data={
                 "stage": "analyzing",
-                "message": f"正在整理 {len(docs)} 份材料（甲方、乙方、共用三方分组）...",
+                "message": (
+                    f"正在整理 {len(docs)} 份材料"
+                    f"（甲方 {len(party_a_docs)} 份、乙方 {len(party_b_docs)} 份、"
+                    f"共用 {len(common_docs)} 份）..."
+                ),
             },
-        )
-
-        party_a_docs = []
-        party_b_docs = []
-        common_docs  = []
-
-        for doc in docs:
-            party = _classify_filename(doc.filename)
-            if party == "甲方":
-                party_a_docs.append(doc)
-            elif party == "乙方":
-                party_b_docs.append(doc)
-            else:
-                common_docs.append(doc)
-
-        logger.info(
-            "Session %s Case2：甲方 %d 份，乙方 %d 份，共用 %d 份",
-            session_id, len(party_a_docs), len(party_b_docs), len(common_docs),
         )
 
         # ── Phase 2：构造 doc_items 并调用 Agent C ────────────────────────
@@ -156,28 +125,29 @@ class Case2MediatorBriefingHandler(CaseHandler):
         except Exception as exc:
             raise ValueError(f"创建 Agent C 对话失败：{exc}") from exc
 
-        # 构造三方 document items
+        # 构造 document items：按 party 分组合并，最多 3 个 md（CLAIMANT/RESPONDENT/COMMON/NEUTRAL）
+        groups: dict[str, list] = {}
+        for d in docs:
+            label = _PARTY_LABEL_MAP.get(d.party, "COMMON/NEUTRAL")
+            groups.setdefault(label, []).append(d)
+
         doc_items: list[dict] = []
+        for label in ("CLAIMANT", "RESPONDENT", "COMMON/NEUTRAL"):
+            if label in groups:
+                doc_items.append(_build_c2_merged_doc_item(label, groups[label]))
 
-        def _build_party_items(party_docs: list, party_label: str) -> list[dict]:
-            return [
-                _build_doc_item(
-                    d.filename,
-                    d.summaries,
-                    d.merged_fields,
-                    party_label,
-                )
-                for d in party_docs
-            ]
-
-        doc_items.extend(_build_party_items(party_a_docs, "甲方"))
-        doc_items.extend(_build_party_items(party_b_docs, "乙方"))
-        doc_items.extend(_build_party_items(common_docs, ""))  # 共用材料不标注方向
-
-        total_b64 = sum(len(it["base64_content"]) for it in doc_items)
         logger.info(
-            "Session %s Case2：构造 %d 份 document item，base64 合计 %d 字节",
-            session_id, len(doc_items), total_b64,
+            "Session %s Case2：分组结果 CLAIMANT=%d RESPONDENT=%d COMMON/NEUTRAL=%d，"
+            "合并后 doc_items=%d 个，文件名及字节数：%s",
+            session_id,
+            len(groups.get("CLAIMANT", [])),
+            len(groups.get("RESPONDENT", [])),
+            len(groups.get("COMMON/NEUTRAL", [])),
+            len(doc_items),
+            [
+                {"name": it["name"], "bytes": len(base64.b64decode(it["base64_content"]))}
+                for it in doc_items
+            ],
         )
 
         yield SseEvent(
@@ -185,7 +155,7 @@ class Case2MediatorBriefingHandler(CaseHandler):
             data={
                 "stage": "analyzing",
                 "message": (
-                    f"正在向 Agent C 发送全部 {len(doc_items)} 份材料"
+                    f"正在向 Agent C 发送 {len(doc_items)} 份合并材料"
                     f"（甲方 {len(party_a_docs)} 份、乙方 {len(party_b_docs)} 份、"
                     f"共用 {len(common_docs)} 份），请稍候..."
                 ),
@@ -194,26 +164,15 @@ class Case2MediatorBriefingHandler(CaseHandler):
 
         # 调用 Agent C 生成调解员简报
         try:
-            from api.pdf_chat import _ask_agent_b_with_docs  # noqa: PLC0415
-
             briefing_prompt = (
-                "以下是本次调解案件三方提交的全部材料分析结果：\n"
-                "  · 甲方材料：当事人 A 的调解意向申请表、相关邮件/信函及证据提交\n"
-                "  · 乙方材料：当事人 B 的调解意向申请表、相关信函及证据提交\n"
-                "  · 共用材料：此前谈判尝试的结果记录\n\n"
-                "请基于上述全部材料，为调解员生成一份完整的结构化简报，内容应包括：\n"
-                "  1. 案件概要（争议背景、涉案金额/事项）\n"
-                "  2. 甲方立场与主要诉求\n"
-                "  3. 乙方立场与主要诉求\n"
-                "  4. 双方主要争议焦点对比\n"
-                "  5. 关键证据与文件摘要\n"
-                "  6. 此前谈判尝试及结果\n"
-                "  7. 调解建议与潜在方向\n"
+                "Please prepare the mediator briefing based on the attached materials. "
+                "The bundle contains documents from both parties (Claimant and Respondent) "
+                "and one common/neutral document. "
+                "Each attachment's first line indicates its party label. "
+                "Follow the output structure and principles defined in your role configuration."
             )
 
             async with httpx.AsyncClient(timeout=300.0, trust_env=False) as c_client:
-                # 复用 _ask_agent_b_with_docs，传入 Agent C conversation_id 和 headers
-                # 注意：此函数内部使用 agent_b_auth_headers，需在 Agent C headers 下重新请求
                 briefing_text = await _ask_agent_c_with_docs(
                     c_client, conv_id, briefing_prompt, doc_items
                 )
@@ -413,37 +372,86 @@ async def _ask_agent_c(
 ) -> str:
     """
     向 Agent C 发送纯文本消息，返回回复文本。
-    与 api.pdf_chat._ask_agent_b 对称。
+    与 api.pdf_chat._ask_agent_b 对称，使用相同的 messages[] payload 格式。
     """
-    from model.config import MESSAGE_URL  # noqa: PLC0415
-
     payload = {
         "conversation_id": conversation_id,
-        "user_id": "case2_user",
-        "query": text,
+        "response_mode": "blocking",
+        "messages": [{"role": "user", "content": [{"type": "text", "text": text}]}],
     }
     resp = await client.post(MESSAGE_URL, headers=agent_c_auth_headers(), json=payload)
     resp.raise_for_status()
-    data = resp.json()
+    return extract_gptbots_reply(resp.json())
 
-    # 兼容 GPTBots 多层响应结构
-    if isinstance(data, dict):
-        for key in ("answer", "text", "message", "reply"):
-            val = data.get(key)
-            if val and isinstance(val, str):
-                return val
-        # data.output[0].content.text
-        output = data.get("output", [])
-        if output and isinstance(output, list):
-            first = output[0]
-            if isinstance(first, dict):
-                content = first.get("content", {})
-                if isinstance(content, dict) and isinstance(content.get("text"), str):
-                    return content["text"]
-                if isinstance(content, str):
-                    return content
 
-    return str(data)
+# ── Case 2 文档构造辅助 ──────────────────────────────────────────────────────
+
+# DocResult.party（中文）→ 发送给 Agent C 的英文 party 标签（出现在 md 首行）
+_PARTY_LABEL_MAP: dict[str, str] = {
+    "甲方": "CLAIMANT",
+    "乙方": "RESPONDENT",
+    "通用": "COMMON/NEUTRAL",
+}
+
+# 英文 party 标签 → 合并后的固定 md 文件名
+_PARTY_FILENAME_MAP: dict[str, str] = {
+    "CLAIMANT": "claimant_materials.md",
+    "RESPONDENT": "respondent_materials.md",
+    "COMMON/NEUTRAL": "common_materials.md",
+}
+
+
+def _build_c2_merged_doc_item(party_label: str, docs: list) -> dict:
+    """
+    将同一方的多份 DocResult 合并为单个 Case 2 GPTBots document item。
+
+    Markdown 格式（首行为英文 party 标签，各文档间用分隔符隔开）：
+
+        [CLAIMANT]
+
+        # 文档 1：UC2_1_mediation_intake_form (Party A).pdf
+
+        [Page 1]
+        {PART_A 摘要}
+
+        ---
+
+        ```json
+        {PART_B JSON}
+        ```
+
+        ===== 文档分隔 =====
+
+        # 文档 2：UC2_2_email_from_Party_A.pdf
+        ...
+
+    Args:
+        party_label: 英文 party 标签，如 "CLAIMANT"、"RESPONDENT"、"COMMON/NEUTRAL"。
+        docs:        该方所有 DocResult，按上传顺序排列。
+
+    Returns:
+        GPTBots document item dict，name 为固定文件名（如 claimant_materials.md）。
+    """
+    sections: list[str] = []
+    for idx, doc in enumerate(docs, start=1):
+        filled = [(i + 1, s) for i, s in enumerate(doc.summaries) if s.strip()]
+        summary_block = "\n\n".join(f"[Page {p}]\n{t}" for p, t in filled)
+        fields_json = json.dumps(doc.merged_fields, ensure_ascii=False, indent=2)
+        section = (
+            f"# 文档 {idx}：{doc.filename}\n\n"
+            f"{summary_block}\n\n"
+            f"---\n\n"
+            f"```json\n{fields_json}\n```"
+        )
+        sections.append(section)
+
+    sep = "\n\n===== 文档分隔 =====\n\n"
+    body = sep.join(sections)
+    content = f"[{party_label}]\n\n{body}\n"
+
+    b64 = base64.b64encode(content.encode("utf-8")).decode("utf-8")
+    filename = _PARTY_FILENAME_MAP[party_label]
+    return {"base64_content": b64, "format": "md", "name": filename}
 
 
 async def _ask_agent_c_with_docs(
@@ -454,33 +462,24 @@ async def _ask_agent_c_with_docs(
 ) -> str:
     """
     向 Agent C 发送带文档的消息，返回回复文本。
-    与 api.pdf_chat._ask_agent_b_with_docs 对称。
+    与 api.pdf_chat._ask_agent_b_with_docs 对称，使用相同的 messages[] payload 格式。
     """
-    from model.config import MESSAGE_URL  # noqa: PLC0415
-
+    content: list[dict] = [{"type": "text", "text": prompt}]
+    if doc_items:
+        content.append({"type": "document", "document": doc_items})
     payload = {
         "conversation_id": conversation_id,
-        "user_id": "case2_user",
-        "query": prompt,
-        "documents": doc_items,
+        "response_mode": "blocking",
+        "messages": [{"role": "user", "content": content}],
     }
+
+    logger.info(
+        "Case2 Agent C 发送请求：conversation_id=%s，doc_items=%d 份（%s）",
+        conversation_id,
+        len(doc_items),
+        [d["name"] for d in doc_items],
+    )
+
     resp = await client.post(MESSAGE_URL, headers=agent_c_auth_headers(), json=payload)
     resp.raise_for_status()
-    data = resp.json()
-
-    if isinstance(data, dict):
-        for key in ("answer", "text", "message", "reply"):
-            val = data.get(key)
-            if val and isinstance(val, str):
-                return val
-        output = data.get("output", [])
-        if output and isinstance(output, list):
-            first = output[0]
-            if isinstance(first, dict):
-                content = first.get("content", {})
-                if isinstance(content, dict) and isinstance(content.get("text"), str):
-                    return content["text"]
-                if isinstance(content, str):
-                    return content
-
-    return str(data)
+    return extract_gptbots_reply(resp.json())
