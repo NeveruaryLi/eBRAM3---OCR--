@@ -1143,3 +1143,122 @@ html, body {
   .sel-cards { grid-template-columns: 1fr; }
   .sel-hero h1 { font-size: 1.6rem; }
 }
+
+/* ── Case 5：搜索区样式 ── */
+.c5-search-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.4rem;
+}
+
+.c5-keyword-input {
+  flex: 1;
+  padding: 0.55rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 0.85rem;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.c5-keyword-input:focus { border-color: var(--accent); }
+.c5-keyword-input::placeholder { color: var(--text-muted); }
+.c5-keyword-input:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.c5-search-btn {
+  padding: 0.55rem 1rem;
+  border-radius: 8px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, opacity 0.15s;
+}
+.c5-search-btn:hover:not(:disabled) { background: var(--accent-h); }
+.c5-search-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.c5-search-hint {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-bottom: 0.6rem;
+}
+
+/* ── Case 5：结果卡片列表 ── */
+.c5-results-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0.6rem 0 0.4rem;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.c5-results-list[hidden] { display: none; }
+
+.c5-result-card {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  border-radius: 7px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.c5-result-index {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  min-width: 1.6rem;
+  flex-shrink: 0;
+}
+
+.c5-type-badge {
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.c5-type-case {
+  background: rgba(37,99,235,0.15);
+  color: #3b82f6;
+}
+.c5-type-legis {
+  background: rgba(124,58,237,0.15);
+  color: #8b5cf6;
+}
+:root.light .c5-type-case {
+  background: rgba(29,78,216,0.1);
+  color: #1d4ed8;
+}
+:root.light .c5-type-legis {
+  background: rgba(109,40,217,0.1);
+  color: #6d28d9;
+}
+
+.c5-result-title {
+  font-size: 0.8rem;
+  color: var(--accent);
+  text-decoration: none;
+  flex: 1;
+  min-width: 120px;
+  word-break: break-word;
+}
+.c5-result-title:hover { text-decoration: underline; }
+
+.c5-result-meta {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  width: 100%;
+  padding-left: calc(1.6rem + 0.5rem);
+}

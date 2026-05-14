@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>eBRAM AI · HKLII 案例检索</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="preload" href="/static/fonts/outfit-400.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/static/fonts/outfit-600.woff2" as="font" type="font/woff2" crossorigin>
+  <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+</head>
+<body>
+
+<div class="layout">
+
+  <!-- ── 侧边栏 ── -->
+  <nav class="sidebar">
+
+    <!-- Logo 行 + 主题切换 -->
+    <div class="sidebar-top">
+      <div class="logo-wrap">
+        <div class="logo"><span class="logo-mark">e</span>BRAM</div>
+        <div class="logo-sub">AI 文档助手</div>
+      </div>
+      <button class="theme-btn" id="themeBtn" title="切换主题" aria-label="切换深色/浅色主题">
+        <svg class="icon-moon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg class="icon-sun"  width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+      </button>
+    </div>
+
+    <!-- 新对话 -->
+    <button class="new-chat-btn" id="newChatBtn">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      新对话
+    </button>
+
+    <!-- 返回场景选择 -->
+    <div class="sidebar-divider"></div>
+    <a class="sidebar-back-link" href="/" aria-label="返回场景选择页">
+      <svg class="back-chevron" width="13" height="13" viewBox="0 0 24 24"
+           fill="none" stroke="currentColor" stroke-width="2.5"
+           stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="15 18 9 12 15 6"/>
+      </svg>
+      返回选择
+    </a>
+
+    <!-- 历史记录区 -->
+    <div class="history-section">
+      <div class="sidebar-label" id="historyLabel">最近对话</div>
+      <div class="history-list" id="historyList"></div>
+    </div>
+
+  </nav>
+
+  <!-- ── 主区域 ── -->
+  <main class="main">
+
+    <div class="messages-wrap" id="messagesWrap">
+
+      <!-- 欢迎页 -->
+      <div class="welcome" id="welcome">
+        <div class="welcome-badge">Case 5 · HKLII 案例检索</div>
+        <h1>香港法律案例检索</h1>
+        <p>输入关键词，AI 自动检索 HKLII 案例库并生成摘要，支持追问案例细节</p>
+        <div class="welcome-cards">
+          <div class="welcome-card">
+            <div class="wc-icon-wrap wc-icon-upload">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+            </div>
+            <div><strong>搜索 HKLII</strong><small>输入英文或中文法律关键词</small></div>
+          </div>
+          <div class="welcome-card">
+            <div class="wc-icon-wrap wc-icon-analyze">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+              </svg>
+            </div>
+            <div><strong>AI 生成摘要</strong><small>Agent J 为每条案例生成结构化摘要</small></div>
+          </div>
+          <div class="welcome-card">
+            <div class="wc-icon-wrap wc-icon-chat">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+              </svg>
+            </div>
+            <div><strong>深度追问</strong><small>针对案例细节进行后续对话</small></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="messages-list" id="messagesList"></div>
+    </div>
+
+    <!-- 关键词搜索区 -->
+    <div class="file-queue-panel" id="searchPanel">
+      <div class="fq-header" id="searchHeader">
+        <span class="fq-title">⚖️ 搜索 HKLII 案例</span>
+      </div>
+      <div class="fq-body" id="searchBody">
+        <div class="c5-search-row">
+          <input
+            type="text"
+            id="keywordInput"
+            class="c5-keyword-input"
+            placeholder="输入法律关键词，例如：wrongful dismissal"
+            autocomplete="off"
+          />
+          <button class="c5-search-btn" id="searchBtn">🔍 搜索</button>
+        </div>
+        <div class="c5-search-hint">示例：wrongful dismissal &nbsp;·&nbsp; unfair dismissal &nbsp;·&nbsp; 解雇赔偿</div>
+
+        <!-- 搜索结果预览（scrape_complete 后显示） -->
+        <div id="resultsList" class="c5-results-list" hidden></div>
+
+        <!-- 操作按钮组 -->
+        <div class="fq-actions">
+          <button class="analyze-btn" id="analyzeBtn" hidden disabled>开始生成摘要</button>
+          <button class="report-btn report-btn-word" id="c5WordBtn" hidden>📄 摘要 Word</button>
+          <button class="report-btn report-btn-pdf"  id="c5PdfBtn"  hidden>📥 摘要 PDF</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 进度面板 -->
+    <div class="progress-panel" id="progressPanel" hidden>
+      <div class="progress-top">
+        <span class="progress-stage" id="progressStage">准备中...</span>
+        <span class="progress-ratio" id="progressRatio"></span>
+      </div>
+      <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+      <div class="progress-dots" id="progressDots"></div>
+    </div>
+
+    <!-- 输入区域（无上传按钮） -->
+    <div class="input-area">
+      <div class="input-box" id="inputBox">
+        <textarea id="textInput" placeholder="针对案例追问细节，或直接发送问题..." rows="1"></textarea>
+        <button class="send-btn" id="sendBtn" disabled title="发送 (Enter)">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+        </button>
+      </div>
+      <div class="input-footer">eBRAM AI 可能出现错误，重要内容请自行核实 &nbsp;·&nbsp; Enter 发送 &nbsp;·&nbsp; Shift+Enter 换行</div>
+    </div>
+
+  </main>
+</div>
+
+<script src="/static/common.js"></script>
+<script src="/static/case5.js"></script>
+</body>
+</html>

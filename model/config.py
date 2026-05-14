@@ -17,6 +17,7 @@ def _env(name: str, default: str = "") -> str:
 API_KEY: str = _env("api_key") or _env("API_KEY")
 AGENT_B_API_KEY: str = _env("AGENT_B_API_KEY")
 AGENT_C_API_KEY: str = _env("AGENT_C_API_KEY")   # Case 2 调解员简报 Agent
+AGENT_J_API_KEY: str = _env("AGENT_J_API_KEY")   # Case 5 HKLII 摘要 Agent
 
 MESSAGE_URL: str = _env(
     "base_url",
@@ -80,6 +81,14 @@ def agent_c_auth_headers() -> dict[str, str]:
     """构造调用 Agent C GPTBots API 所需的请求头（Case 2 调解员简报）。"""
     return {
         "Authorization": f"Bearer {AGENT_C_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+
+def agent_j_auth_headers() -> dict[str, str]:
+    """构造调用 Agent J GPTBots API 所需的请求头（Case 5 HKLII 摘要）。"""
+    return {
+        "Authorization": f"Bearer {AGENT_J_API_KEY}",
         "Content-Type": "application/json",
     }
 
