@@ -1262,3 +1262,62 @@ html, body {
   width: 100%;
   padding-left: calc(1.6rem + 0.5rem);
 }
+
+/* Case 5：折叠按钮 */
+.c5-toggle-btn {
+  margin-left: auto;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  border: 1px solid var(--border2);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, opacity 0.2s;
+  flex-shrink: 0;
+  line-height: 1.6;
+}
+.c5-toggle-btn:hover { background: var(--surface2); color: var(--text); border-color: var(--border); }
+/* 淡入动画：toggle 按钮从 hidden 变为可见时 */
+.c5-toggle-btn:not([hidden]) { animation: c5-fadein 0.25s ease; }
+@keyframes c5-fadein { from { opacity: 0; } to { opacity: 1; } }
+
+/* Case 5：折叠态关键词摘要行 */
+.c5-compact-kw {
+  font-size: 0.79rem;
+  color: var(--text-muted);
+  font-weight: 500;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 0.25rem;
+  cursor: pointer;   /* 提示整行可点 */
+}
+
+/* 折叠后 header 整行 cursor 提示 */
+#searchHeader:has(#searchToggle:not([hidden])) {
+  cursor: pointer;
+}
+
+/* Case 5：搜索提示框（no_results / search_timeout） */
+.c5-notice {
+  padding: 0.6rem 0.9rem;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  margin: 0.4rem 0;
+}
+.c5-notice-warning {
+  background: rgba(234, 179, 8, 0.12);
+  border: 1px solid rgba(234, 179, 8, 0.35);
+  color: #ca8a04;
+}
+.c5-notice-error {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #dc2626;
+}
+:root.light .c5-notice-warning { color: #92400e; }
+:root.light .c5-notice-error   { color: #991b1b; }

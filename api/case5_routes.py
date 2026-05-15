@@ -22,7 +22,13 @@ from fastapi import APIRouter, Form
 from fastapi.responses import StreamingResponse
 
 from api.pdf_chat import session_metadata, session_store
-from scraper.hklii import ScrapedResult, attach_contents_parallel, search_hklii
+from scraper.hklii import (
+    NoResultsFound,
+    ScrapedResult,
+    SearchTimeout,
+    attach_contents_parallel,
+    search_hklii,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/case5", tags=["case5"])
@@ -88,6 +94,25 @@ async def scrape_hklii(
                     headless=True,
                 ),
             )
+        except NoResultsFound:
+            logger.info(
+                "HKLII 无结果 [session=%s, keyword=%s]", session_id, keyword
+            )
+            yield _sse(
+                "no_results",
+                {
+                    "keyword": keyword,
+                    "message": f"未找到关键词 \"{keyword}\" 的相关案例，请尝试其他关键词",
+                },
+            )
+            return
+        except SearchTimeout as exc:
+            logger.warning("HKLII 搜索超时 [session=%s]: %s", session_id, exc)
+            yield _sse(
+                "search_timeout",
+                {"message": "搜索超时，HKLII 可能暂时无法访问，请稍后重试"},
+            )
+            return
         except Exception as exc:
             logger.error("HKLII 搜索失败 [session=%s]: %s", session_id, exc)
             yield _sse(
@@ -98,8 +123,11 @@ async def scrape_hklii(
 
         if not results:
             yield _sse(
-                "error",
-                {"message": "搜索未返回任何结果，请尝试其他关键词"},
+                "no_results",
+                {
+                    "keyword": keyword,
+                    "message": "搜索未返回任何结果，请尝试其他关键词",
+                },
             )
             return
 

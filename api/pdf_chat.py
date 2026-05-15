@@ -85,10 +85,15 @@ async def start_cleanup_task() -> None:
     while True:
         await asyncio.sleep(1800)  # 30 分钟一次
         cutoff = datetime.utcnow() - timedelta(seconds=SESSION_TTL_SECONDS)
-        expired = [
-            sid for sid, docs in session_store.items()
-            if docs and docs[0].created_at < cutoff
-        ]
+        expired = []
+        for sid, docs in list(session_store.items()):
+            try:
+                # Case 1/2: list[ProcessedDocument]（有 created_at）
+                # Case 5:   list[ScrapedResult]  （无 created_at，跳过 TTL 检查）
+                if docs and hasattr(docs[0], "created_at") and docs[0].created_at < cutoff:
+                    expired.append(sid)
+            except Exception:
+                pass  # 数据结构异常时跳过，不中断清理循环
         for sid in expired:
             del session_store[sid]
             session_results_store.pop(sid, None)

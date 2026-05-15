@@ -41,12 +41,16 @@ const newChatBtn    = document.getElementById('newChatBtn');
 const historyList   = document.getElementById('historyList');
 
 // 搜索区
-const keywordInput  = document.getElementById('keywordInput');
-const searchBtn     = document.getElementById('searchBtn');
-const resultsList   = document.getElementById('resultsList');
-const analyzeBtn    = document.getElementById('analyzeBtn');
-const c5WordBtn     = document.getElementById('c5WordBtn');
-const c5PdfBtn      = document.getElementById('c5PdfBtn');
+const keywordInput   = document.getElementById('keywordInput');
+const searchBtn      = document.getElementById('searchBtn');
+const resultsList    = document.getElementById('resultsList');
+const analyzeBtn     = document.getElementById('analyzeBtn');
+const c5WordBtn      = document.getElementById('c5WordBtn');
+const c5PdfBtn       = document.getElementById('c5PdfBtn');
+const searchBody     = document.getElementById('searchBody');
+const searchTitle    = document.getElementById('searchTitle');
+const compactKeyword = document.getElementById('compactKeyword');
+const searchToggle   = document.getElementById('searchToggle');
 
 // ── 状态 ──────────────────────────────────────────────────────────────────────
 let busy = false;
@@ -61,6 +65,7 @@ let scrapeSessionId = null;         // 由 /case5/scrape 创建后写入 session
 let scrapedResults  = [];           // 预览数据（来自 scrape_complete 事件）
 let summaryResult   = null;         // Agent J 摘要文本
 let followupConversationId = null;  // 追问 conversation_id
+let isSearchCollapsed = false;      // 搜索区折叠状态
 
 // ── marked.js ─────────────────────────────────────────────────────────────────
 marked.use({ breaks: true, gfm: true });
@@ -307,6 +312,75 @@ function renderResultsPreview(results, keyword) {
   updateAnalyzeBtnState();
 }
 
+// ── Case 5：搜索区折叠面板 ────────────────────────────────────────────────────
+
+/**
+ * 折叠搜索区，显示紧凑的关键词摘要行。
+ * @param {string} keyword 搜索关键词（显示在折叠行）
+ */
+function collapseSearchPanel(keyword) {
+  isSearchCollapsed = true;
+  // 使用 CSS class 驱动过渡动画（而非 hidden 属性，hidden 会跳过 max-height 过渡）
+  if (searchBody) searchBody.classList.add('collapsed');
+  if (searchTitle)    searchTitle.hidden = true;
+  if (compactKeyword) {
+    compactKeyword.textContent = `⚖️ 搜索: "${keyword}"`;
+    compactKeyword.hidden = false;
+  }
+  if (searchToggle) {
+    searchToggle.textContent = '▼ 展开';
+    searchToggle.title = '展开搜索区';
+  }
+}
+
+/**
+ * 展开搜索区，恢复完整输入界面。
+ */
+function expandSearchPanel() {
+  isSearchCollapsed = false;
+  // 使用 CSS class 驱动过渡动画
+  if (searchBody) searchBody.classList.remove('collapsed');
+  if (searchTitle)    searchTitle.hidden = false;
+  if (compactKeyword) compactKeyword.hidden = true;
+  if (searchToggle) {
+    searchToggle.textContent = '▲ 收起';
+    searchToggle.title = '收起搜索区';
+  }
+}
+
+/**
+ * 在 resultsList 区域渲染搜索提示框（无结果 / 超时 / 错误）。
+ * @param {'warning'|'error'} type  决定配色
+ * @param {string} message          提示文字
+ */
+function showSearchNotice(type, message) {
+  resultsList.innerHTML = `<div class="c5-notice c5-notice-${type}">${message}</div>`;
+  resultsList.hidden = false;
+}
+
+// Toggle 按钮 + header 区域点击（与 Case 2 保持一致，整行可点）
+// 只在 toggle 按钮可见（即 scrape_complete 后）才响应 header 点击
+const searchHeader = document.getElementById('searchHeader');
+if (searchHeader) {
+  searchHeader.addEventListener('click', e => {
+    // 仅当 toggle 可见时才响应 header 点击（避免搜索前误触）
+    if (searchToggle && !searchToggle.hidden) {
+      // 阻止来自 input / button 本身的冒泡（只响应 header 空白区域）
+      if (e.target === searchHeader || e.target === searchTitle || e.target === compactKeyword) {
+        if (isSearchCollapsed) expandSearchPanel();
+        else collapseSearchPanel(keywordInput.value.trim() || '');
+      }
+    }
+  });
+}
+if (searchToggle) {
+  searchToggle.addEventListener('click', e => {
+    e.stopPropagation(); // 防止冒泡到 searchHeader
+    if (isSearchCollapsed) expandSearchPanel();
+    else collapseSearchPanel(keywordInput.value.trim() || '');
+  });
+}
+
 /**
  * 开始 HKLII 搜索与正文抓取（SSE）。
  */
@@ -322,6 +396,11 @@ async function startScrape() {
   resultsList.hidden = true;
   hideSummaryButtons();
   updateAnalyzeBtnState();
+
+  // 若搜索区处于折叠状态，先展开
+  if (isSearchCollapsed) expandSearchPanel();
+  // 隐藏折叠按钮，搜索期间不可折叠
+  if (searchToggle) searchToggle.hidden = true;
 
   // 创建新的 scrape session（每次搜索重新生成）
   scrapeSessionId = generateUUID();
@@ -403,11 +482,30 @@ async function startScrape() {
             appendToCurrentSession('ai', completeMsg, Date.now());
             saveSessions();
             renderResultsPreview(scrapedResults, keyword);
+            // 搜索完成后显示折叠按钮
+            if (searchToggle) searchToggle.hidden = false;
+            scrapeComplete = true;
+            break;
+          }
+          case 'no_results': {
+            const kw = ev.keyword || keyword;
+            updateMessage(scrapeMsgId, `未找到关键词 **"${kw}"** 的相关案例，请尝试其他关键词。`);
+            showSearchNotice('warning', `未找到 "${kw}" 的相关案例，请尝试其他关键词`);
+            scrapedResults = [];
+            updateAnalyzeBtnState();
+            scrapeComplete = true; // 视为正常终止，不触发通用"未完成"提示
+            break;
+          }
+          case 'search_timeout': {
+            updateMessage(scrapeMsgId, `❌ 搜索超时，HKLII 可能暂时无法访问，请稍后重试。`);
+            showSearchNotice('error', '搜索超时，请稍后重试');
             scrapeComplete = true;
             break;
           }
           case 'error': {
             updateMessage(scrapeMsgId, `❌ 搜索出错：${ev.message}`);
+            showSearchNotice('error', ev.message || '搜索出错，请重试');
+            scrapeComplete = true;
             break;
           }
         }
@@ -575,9 +673,15 @@ if (c5PdfBtn)  c5PdfBtn.addEventListener('click',  () => downloadReport('HKLII �
 
 // ── 文字聊天（追问） ──────────────────────────────────────────────────────────
 
-/** 有 summaryResult 时走追问路径，否则走普通聊天 */
+/**
+ * 只要存在 scrapeSessionId（本轮已爬取），追问就路由到 /pdf/session/chat（Agent J）。
+ * 分析未完成时，后端返回 400 "请先完成综合分析"，前端显示在气泡中。
+ *
+ * 不再用 summaryResult 判断：summaryResult=null 时静默 fallback 到 Agent B 是错误行为，
+ * 应让用户明确知道"需要先生成摘要"而非收到 Agent B 的无关回复。
+ */
 function shouldUseAnalysisChat() {
-  return scrapeSessionId && !!summaryResult;
+  return !!scrapeSessionId;
 }
 
 async function sendText(text) {
@@ -780,6 +884,13 @@ function resetCurrentView() {
   keywordInput.value     = '';
   hideSummaryButtons();
   updateAnalyzeBtnState();
+
+  // 重置折叠状态（直接设置而非调用 expandSearchPanel，避免改变 toggle 文案）
+  isSearchCollapsed = false;
+  if (searchBody)     searchBody.classList.remove('collapsed');
+  if (searchTitle)    searchTitle.hidden = false;
+  if (compactKeyword) compactKeyword.hidden = true;
+  if (searchToggle)   searchToggle.hidden = true;
 
   currentConversationId = null;
   currentSessionId      = null;

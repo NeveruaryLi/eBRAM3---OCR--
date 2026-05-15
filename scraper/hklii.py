@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from urllib.parse import urljoin
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,24 @@ CONTENT_CONCURRENCY_CAP = 32
 
 # 等待策略：domcontentloaded 比 load 更快；部分站点资源很慢会导致 load 超时
 GOTO_WAIT = "domcontentloaded"
-GOTO_TIMEOUT_MS = 90_000
+GOTO_TIMEOUT_MS = 60_000  # 60s：超过此时间视为网络异常
+
+# HKLII Vuetify 数据表：无结果时渲染的特殊行（与 tr.resultrow 互斥）
+# 观察于 2026-05-15，通过 headless=True + 垃圾关键词确认
+_NO_RESULTS_SELECTOR = "tr.v-data-table__empty-wrapper"
+
+
+# ---------------------------------------------------------------------------
+# 自定义异常（供上层路由层区分处理）
+# ---------------------------------------------------------------------------
+
+
+class NoResultsFound(Exception):
+    """HKLII 搜索成功但无匹配案例（关键词过于冷僻或拼写错误）。"""
+
+
+class SearchTimeout(Exception):
+    """HKLII 搜索超时或网络异常，无法在预期时间内获取结果。"""
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +213,22 @@ def search_hklii(
             logger.info("HKLII 搜索：%s", search_url)
             page.goto(search_url, wait_until=GOTO_WAIT, timeout=GOTO_TIMEOUT_MS)
 
-            page.wait_for_selector("tr.resultrow", timeout=120_000)
+            # 等待真实结果出现（HKLII 是 Vuetify SPA：骨架先渲染空表，数据异步填入）
+            # 注意：_NO_RESULTS_SELECTOR 在页面骨架阶段就会出现，不能作为联合等待条件，
+            # 否则有结果的搜索也会立即命中空表骨架而误判为无结果。
+            # 正确策略：只等 resultrow，超时后再检查是否真的无结果。
+            try:
+                page.wait_for_selector("tr.resultrow", timeout=15_000)
+            except PlaywrightTimeoutError:
+                # 15s 内 resultrow 未出现——判断是"无结果"还是"网络超时"
+                if page.query_selector(_NO_RESULTS_SELECTOR):
+                    raise NoResultsFound(
+                        f"HKLII 未找到关键词 \"{keyword}\" 的相关案例，请尝试其他关键词"
+                    )
+                raise SearchTimeout(
+                    "HKLII 搜索结果未在 15 秒内出现，页面可能无法访问，请稍后重试"
+                )
+
             rows = page.query_selector_all("tr.resultrow")
             logger.info("HKLII 找到 %d 条结果行，取前 %d 条", len(rows), max_results)
 
@@ -242,8 +274,11 @@ def search_hklii(
                 except Exception as exc:
                     logger.warning("HKLII 解析结果行错误: %s", exc)
 
+        except (NoResultsFound, SearchTimeout):
+            raise  # 透传给上层处理，不视为通用错误
         except Exception as exc:
             logger.error("HKLII 搜索失败: %s", exc)
+            raise SearchTimeout(f"HKLII 搜索异常：{exc}") from exc
         finally:
             browser.close()
 

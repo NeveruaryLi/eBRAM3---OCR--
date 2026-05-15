@@ -59,6 +59,13 @@ SAFETY_LIMIT_CHARS = 100_000
 # md 内案例间的分隔线
 _CASE_SEPARATOR = "=" * 40
 
+# Agent J 固定文本提示模板（产品确认版本，不要修改措辞）
+TEXT_PROMPT_TEMPLATE = (
+    'User keyword: "{keyword}"\n\n'
+    "The attached document contains HKLII search results for this keyword.\n"
+    "Process it according to your role configuration."
+)
+
 
 class Case5HkliiSearchHandler(CaseHandler):
     """Case 5：HKLII 案例检索与摘要。
@@ -146,13 +153,7 @@ class Case5HkliiSearchHandler(CaseHandler):
             },
         )
 
-        text_prompt = (
-            "Please analyse the attached HKLII search results and provide a structured "
-            "summary for each case. For every case, include: (1) case name and citation, "
-            "(2) court and date, (3) key legal issues and holdings in 2-3 sentences, "
-            "(4) relevance to the search keyword. "
-            "Follow the output structure defined in your role configuration."
-        )
+        text_prompt = _build_text_prompt(keyword)
 
         try:
             async with httpx.AsyncClient(timeout=300.0, trust_env=False) as j_client:
@@ -376,6 +377,11 @@ async def _ask_agent_j(
 
 
 # ── md 文档构造辅助 ──────────────────────────────────────────────────────────
+
+
+def _build_text_prompt(keyword: str) -> str:
+    """构造发送给 Agent J 的文本提示，注入搜索关键词。"""
+    return TEXT_PROMPT_TEMPLATE.format(keyword=keyword)
 
 
 def _has_encoding_issue(content: str) -> bool:

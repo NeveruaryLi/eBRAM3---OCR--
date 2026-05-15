@@ -97,7 +97,11 @@
     <!-- 关键词搜索区 -->
     <div class="file-queue-panel" id="searchPanel">
       <div class="fq-header" id="searchHeader">
-        <span class="fq-title">⚖️ 搜索 HKLII 案例</span>
+        <span class="fq-title" id="searchTitle">⚖️ 搜索 HKLII 案例</span>
+        <!-- 折叠态时显示的紧凑关键词行（初始隐藏） -->
+        <span class="c5-compact-kw" id="compactKeyword" hidden></span>
+        <!-- 折叠按钮（scrape_complete 后才出现） -->
+        <button class="c5-toggle-btn" id="searchToggle" hidden title="收起搜索区">▲ 收起</button>
       </div>
       <div class="fq-body" id="searchBody">
         <div class="c5-search-row">
