@@ -1,96 +1,84 @@
-# README
+# eBRAM AI 文档助手（eBRAM3）
+
+> 为 eBRAM 调解/仲裁平台提供 AI 辅助文档分析。上传案件 PDF，自动 OCR、逐页 AI 分析、
+> 多文档综合，结果通过 SSE 实时流式输出；支持 HKLII 案例检索与 Word/PDF 报告下载。
+
+> 📖 **接手开发前请先读 [`docs/HANDOVER.md`](docs/HANDOVER.md)** —— 单一权威交接文档，
+> 含架构契约、各 Case 实现要点、开发陷阱与「拉下来就能跑」步骤。
+
 ---
 
-```markdown
-# eBRAM AI 文档助手
+## 功能概览（Use Cases）
 
-> 专为 eBRAM 在线仲裁平台设计的 AI 文档分析工具。上传仲裁案件 PDF 材料，系统自动 OCR 识别、逐页 AI 分析、多文档综合对比，结果实时流式输出。
+| Case | 说明 |
+|---|---|
+| **Case 1** | 上传双方 PDF → 逐页摘要 → 综合分析 → 生成双方谈判问题清单 |
+| **Case 2** | 多份调解材料 → 生成调解员简报（Markdown） |
+| **Case 5** | 关键词 → Playwright 爬取 HKLII 前 10 条案例 → AI 摘要 |
 
-## 功能概览
-
-- **PDF OCR**：上传扫描件 PDF，调用飞桨 PaddleOCR 官方 API 识别文字，支持中英双语混合
-- **逐页 AI 分析**：由 GPTBots Agent A 逐页提取摘要和结构化字段（当事方、金额、时间线等）
-- **综合分析**：Agent B 汇总所有页面信息，输出完整的案件分析报告
-- **多文档模式**：同时上传多份材料，全部处理完成后统一综合分析
-- **文字追问**：分析完成后可继续与 AI 对话，提问基于文档内容
-- **实时进度**：SSE 流式推送，OCR 进度 + 页级分析进度实时可见
-- **深色/浅色主题**，对话历史记录（localStorage）
-
-## 系统要求
-
-- Python 3.11（推荐使用 Conda 环境）
-- Windows（提供 `.bat` 脚本）/ macOS / Linux 均可运行
-- GPTBots 账号（需配置 Agent A 和 Agent B 两个 Agent）
-- 飞桨 AI Studio 账号（获取 PaddleOCR API Token）
+通用能力：飞桨 PaddleOCR 识别、GPTBots 多 Agent 分析、SSE 实时进度、文字追问、
+Word/PDF 报告下载、深色/浅色双主题。
 
 ## 快速开始
 
-### 1. 配置环境
-
 ```bash
-conda create -n ebram python=3.11
-conda activate ebram
+# 1. 环境（务必 Python 3.11）
+conda create -n ebram python=3.11 -y && conda activate ebram
+
+# 2. 依赖
 pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple
-```
+playwright install chromium          # Case 5 爬虫内核（仅首次）
 
-### 2. 配置密钥
+# 3. 密钥：复制模板并填入真实 key
+cp .env.example .env                 # 编辑 .env，替换占位符
 
-```bash
-cp .env.example .env
-# 编辑 .env，填入以下三项：
-# api_key=app-xxxxxxx          （Agent A 的 GPTBots API Key）
-# AGENT_B_API_KEY=app-xxxxxxx  （Agent B 的 GPTBots API Key）
-# PADDLE_OCR_TOKEN=xxxxxxx     （飞桨 AI Studio 的访问令牌）
-```
-
-### 3. 启动服务
-
-**命令行：**
-```bash
+# 4. 启动 → http://localhost:8000
 python app.py
 ```
 
-浏览器访问：[http://localhost:8000](http://localhost:8000)
+必填密钥（缺失会阻止启动）：`api_key`、`AGENT_B_API_KEY`、`PADDLE_OCR_TOKEN`。
+Case 2/5 另需 `AGENT_C_API_KEY` / `AGENT_J_API_KEY`。详见 `.env.example` 与
+[`docs/HANDOVER.md`](docs/HANDOVER.md) §0。
 
-## 接口文档
+> **Windows**：PDF 报告经 `docx2pdf` 转换，依赖本机安装的 Microsoft Word。
 
-启动后访问 [http://localhost:8000/docs](http://localhost:8000/docs) 查看自动生成的 OpenAPI 文档。
+## 主要端点
 
 | 端点 | 方法 | 说明 |
 |---|---|---|
-| `/chat` | POST | 多轮文字聊天（Agent B）|
-| `/pdf/pages/chat` | POST | PDF 逐页分析（SSE 流式）|
-| `/pdf/session/analyze` | POST | 多文档综合分析（SSE 流式）|
-| `/pdf/chat` | POST | 简易 PDF 分析（非流式，仅测试用）|
-| `/graph/chat` | POST | 单轮对话（Agent A，遗留接口）|
-| `/health` | GET | 健康检查 |
+| `/` `/case1` `/case2` `/case5` | GET | 页面 |
+| `/pdf/pages/chat` | POST | 上传 PDF → OCR → 逐页分析（SSE） |
+| `/pdf/session/analyze` | POST | 综合分析（SSE，按 case_type 分派） |
+| `/pdf/session/report` | POST | 下载 Word/PDF 报告 |
+| `/pdf/session/chat` | POST | 文字追问 |
+| `/case5/scrape` | POST | HKLII 爬取（SSE，Case 5 专属） |
 
-## 技术架构
+启动后 `http://localhost:8000/docs` 查看自动生成的 OpenAPI 文档。
 
-```
-前端 (Vanilla JS + SSE)
-    ↕ HTTP / SSE
-后端 (FastAPI + uvicorn)
-    ├── PaddleOCR API   ← PDF OCR（云端，轮询）
-    ├── GPTBots Agent A ← 逐页分析（结构化输出 PART_A/B）
-    └── GPTBots Agent B ← 综合分析 + 文字追问
-```
+## 技术栈
+
+FastAPI + uvicorn ｜ 原生 JS + SSE ｜ PaddleOCR 官方 API ｜ GPTBots（新加坡节点）｜
+PyMuPDF ｜ python-docx + docx2pdf ｜ Playwright。
 
 ## 项目结构
 
 ```
-api/           HTTP 路由（chat.py / pdf_chat.py / graph_route.py）
-model/         配置、数据模型、工具函数
-static/        前端静态文件（index.html / style.css / app.js）
-db/            待实现：数据库持久化层
-agent/         待实现：本地 Agent 封装
-tool/          待实现：扩展工具函数
+app.py        FastAPI 入口（路由挂载 + 配置校验）
+api/          HTTP 路由层（pdf_chat / case5_routes / chat / graph_route）
+cases/        Handler 层（base 契约 + 各 Case 实现 + REGISTRY）
+model/        基础设施（config / report_generator / pdf_processor / utils / schemas）
+scraper/      Case 5 HKLII 爬虫（Playwright）
+static/       前端（每个 Case 一套 html+js，视觉独立）
+docs/         HANDOVER.md（权威交接文档）
+input_example/ 各 Usecase 测试样本
 ```
 
 ## 已知限制
 
-- 会话数据存储在内存中，**服务重启后清空**
-- 暂无用户鉴权，建议仅在内网环境使用
-- PaddleOCR 最大等待时间为 10 分钟（120次×5秒）
-- 多文档处理为串行模式（非并发），大量文件时耗时较长
-```
+- 会话数据存内存，**服务重启即清空**。
+- PaddleOCR 最长等待 10 分钟（120×5s）。
+- 多文档为串行处理，文件多时较慢。
+
+---
+
+更多架构细节、决策记录与开发陷阱见 [`docs/HANDOVER.md`](docs/HANDOVER.md)。

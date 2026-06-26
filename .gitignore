@@ -1,0 +1,34 @@
+# ── 密钥与本地配置（绝不提交）──────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Python ────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── 日志与运行产物 ─────────────────────────────────────────
+*.log
+server_err.txt
+server_log.txt
+
+# ── Playwright ────────────────────────────────────────────
+playwright-report/
+.playwright/
+
+# ── 编辑器 / 系统 ──────────────────────────────────────────
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# ── 本地临时与抓取产物 ─────────────────────────────────────
+EBRAM3_scrape/
+tmp/
+*.tmp

@@ -1,9 +1,19 @@
 # 使用 ebram conda 环境运行（Python 3.11）
 # conda activate ebram
 # pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple
+# 安装后还需执行一次：playwright install chromium
+
+# ── Web 框架 ──────────────────────────────────────────────
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
+python-multipart>=0.0.24
 httpx>=0.27.0
 python-dotenv>=1.0.0
-python-multipart>=0.0.24
-pymupdf>=1.23.0
+
+# ── PDF / 文档处理 ────────────────────────────────────────
+pymupdf>=1.23.0          # import fitz：PDF 页数 / 原生文字提取
+python-docx>=1.1.0       # 生成 Word 报告（report_generator.py）
+docx2pdf>=0.1.8          # Word→PDF 转换（Windows 需安装 Microsoft Word）
+
+# ── Case 5 爬虫 ───────────────────────────────────────────
+playwright>=1.40.0       # HKLII 抓取；安装后需 playwright install chromium
