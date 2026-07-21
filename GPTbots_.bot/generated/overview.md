@@ -16,3 +16,16 @@ flowchart LR
 - All long-term memory, short-term memory, user attributes, and tools are disabled.
 - Output type is Image only; reasoning is hidden.
 - Page order, PDF assembly, retries, and failure handling are owned by the eBRAM Case 4 application.
+
+## Published test versions
+
+- `1.0.1`: initial legal page-translation prompt.
+- `1.0.2`: strengthened the Traditional Chinese to English direction.
+- `1.0.3`: added exact structural-cardinality checks and prohibited cross-page reconstruction. This is the current released test version.
+
+## API POC findings
+
+- Blocking calls can return the image reference in `output[].content.image`, but this field may be null even after a successful image generation.
+- The reliable fallback is `GET /v2/messages`, selecting only the Assistant turn and its `branch_content[].image[]`. User turns contain the source upload and must never be used as translated output.
+- Both directions produced a complete page image at the same aspect ratio in the v1.0.3 POC. Table dimensions, amounts, dates, and section counts were preserved.
+- The English-to-Traditional-Chinese sample retained some English product names alongside their Traditional Chinese translation. This model-level bilingual rendering remains a manual-review item after the two planned prompt-adjustment rounds.
