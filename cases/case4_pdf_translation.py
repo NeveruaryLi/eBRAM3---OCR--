@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncGenerator, Callable
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import fitz
 import httpx
@@ -254,6 +254,25 @@ def _is_official_image_url(url: str) -> bool:
     )
 
 
+def _candidate_image_urls(url: str) -> list[str]:
+    """Return the full GPTBots asset first, with its thumbnail as fallback.
+
+    Conversation history exposes generated images through a ``/thumbnail/``
+    path. The same official resource without that path segment is the original
+    image and contains substantially more pixels.
+    """
+    if not _is_official_image_url(url):
+        return [url]
+    parts = urlsplit(url)
+    if "/thumbnail/" not in parts.path:
+        return [url]
+    original_path = parts.path.replace("/thumbnail/", "/", 1)
+    original_url = urlunsplit(
+        (parts.scheme, parts.netloc, original_path, parts.query, parts.fragment)
+    )
+    return [original_url, url]
+
+
 async def _image_bytes_from_reference(
     client: httpx.AsyncClient,
     reference: str | dict[str, Any],
@@ -268,11 +287,24 @@ async def _image_bytes_from_reference(
         return _validate_image_bytes(_decode_base64(reference))
     if not _is_official_image_url(reference):
         raise ValueError("Agent I 图片地址不是 GPTBots 官方 HTTPS 域名")
-    response = await client.get(reference, follow_redirects=True, timeout=60.0)
-    response.raise_for_status()
-    if int(response.headers.get("content-length") or 0) > MAX_OUTPUT_IMAGE_BYTES:
-        raise ValueError("Agent I 返回的图片超过 20 MB")
-    return _validate_image_bytes(response.content)
+    last_error: Exception | None = None
+    for candidate_url in _candidate_image_urls(reference):
+        try:
+            response = await client.get(
+                candidate_url,
+                follow_redirects=True,
+                timeout=60.0,
+            )
+            response.raise_for_status()
+            if int(response.headers.get("content-length") or 0) > MAX_OUTPUT_IMAGE_BYTES:
+                raise ValueError("Agent I 返回的图片超过 20 MB")
+            return _validate_image_bytes(response.content)
+        except (httpx.HTTPError, ValueError) as exc:
+            last_error = exc
+            if candidate_url == reference:
+                raise
+            logger.warning("Agent I 原始译图下载失败，将回退缩略图：%s", type(exc).__name__)
+    raise ValueError("Agent I 译图下载失败") from last_error
 
 
 def assemble_translated_pdf(
