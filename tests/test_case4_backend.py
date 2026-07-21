@@ -25,6 +25,7 @@ from cases.case4_pdf_translation import (
     validate_case4_pdf,
     _image_bytes_from_reference,
     _post_with_retry,
+    _candidate_image_urls,
 )
 
 
@@ -193,6 +194,67 @@ class AgentContractTests(unittest.TestCase):
         with self.assertRaises(httpx.HTTPStatusError):
             asyncio.run(unauthorized_case())
         self.assertEqual(unauthorized_calls, 1)
+
+    def test_thumbnail_url_prefers_original_gptbots_asset(self):
+        thumbnail = (
+            "https://res.gptbots.ai/ailab/bot/chat/file/conv/"
+            "thumbnail/page.jpeg"
+        )
+        self.assertEqual(
+            _candidate_image_urls(thumbnail),
+            [
+                "https://res.gptbots.ai/ailab/bot/chat/file/conv/page.jpeg",
+                thumbnail,
+            ],
+        )
+
+    def test_image_download_uses_original_and_falls_back_to_thumbnail(self):
+        high_resolution = _png_bytes(864, 1222)
+        preview = _png_bytes(566, 800)
+        thumbnail = (
+            "https://res.gptbots.ai/ailab/bot/chat/file/conv/"
+            "thumbnail/page.jpeg"
+        )
+
+        class FakeResponse:
+            def __init__(self, status, content):
+                self.status_code = status
+                self.content = content
+                self.headers = {"content-length": str(len(content))}
+
+            def raise_for_status(self):
+                if self.status_code >= 400:
+                    request = httpx.Request("GET", thumbnail)
+                    raise httpx.HTTPStatusError(
+                        "download failed",
+                        request=request,
+                        response=httpx.Response(self.status_code, request=request),
+                    )
+
+        class FakeClient:
+            def __init__(self, original_status=200):
+                self.original_status = original_status
+                self.urls = []
+
+            async def get(self, url, **kwargs):
+                self.urls.append(url)
+                if "/thumbnail/" not in url:
+                    return FakeResponse(self.original_status, high_resolution)
+                return FakeResponse(200, preview)
+
+        original_client = FakeClient()
+        downloaded = asyncio.run(
+            _image_bytes_from_reference(original_client, thumbnail)
+        )
+        self.assertEqual(downloaded, high_resolution)
+        self.assertNotIn("/thumbnail/", original_client.urls[0])
+
+        fallback_client = FakeClient(original_status=403)
+        downloaded = asyncio.run(
+            _image_bytes_from_reference(fallback_client, thumbnail)
+        )
+        self.assertEqual(downloaded, preview)
+        self.assertEqual(len(fallback_client.urls), 2)
 
 
 class PdfPipelineTests(unittest.TestCase):
