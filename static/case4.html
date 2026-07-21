@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>eBRAM AI · 双语 PDF 翻译</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/case4.css" />
+  <link rel="preload" href="/static/fonts/outfit-400.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/static/fonts/outfit-600.woff2" as="font" type="font/woff2" crossorigin>
+</head>
+<body>
+<div class="layout c4-layout">
+  <nav class="sidebar c4-sidebar" aria-label="Case 4 导航">
+    <div class="sidebar-top">
+      <div class="logo-wrap">
+        <div class="logo"><span class="logo-mark">e</span>BRAM</div>
+        <div class="logo-sub">AI 文档助手</div>
+      </div>
+      <button class="theme-btn" id="themeBtn" title="切换主题" aria-label="切换深色/浅色主题">
+        <svg class="icon-moon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg class="icon-sun" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.72 12.72 1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+      </button>
+    </div>
+
+    <button class="new-chat-btn" id="resetBtn">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+      新翻译
+    </button>
+    <div class="sidebar-divider"></div>
+    <a class="sidebar-back-link" href="/">
+      <svg class="back-chevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m15 18-6-6 6-6"/></svg>
+      返回选择
+    </a>
+
+    <section class="c4-side-process" aria-label="处理流程">
+      <p class="sidebar-label">处理流程</p>
+      <ol>
+        <li><span>01</span><div><strong>拆分页面</strong><small>PDF 转为页面图像</small></div></li>
+        <li><span>02</span><div><strong>逐页翻译</strong><small>Agent I 保留版式</small></div></li>
+        <li><span>03</span><div><strong>合并 PDF</strong><small>恢复原页序与尺寸</small></div></li>
+      </ol>
+    </section>
+    <div class="c4-side-note">单页失败时整份任务终止，不会生成不完整译文。</div>
+  </nav>
+
+  <main class="c4-main">
+    <header class="c4-header">
+      <div>
+        <div class="c4-kicker"><span></span> Case 4 · Bilingual document translation</div>
+        <h1>专业双语校对台</h1>
+        <p>逐页翻译法律文件，同时保留表格、条款层级与原始页面比例。</p>
+      </div>
+      <div class="c4-security"><span>仅限 PDF</span><span>最多 30 页</span><span>25 MB</span></div>
+    </header>
+
+    <div class="c4-workbench">
+      <section class="c4-control-card" aria-labelledby="translationSettings">
+        <div class="c4-card-heading">
+          <div>
+            <span class="c4-step-label">01 / 设置</span>
+            <h2 id="translationSettings">选择翻译方向</h2>
+          </div>
+          <span class="c4-agent-pill">Agent I</span>
+        </div>
+
+        <div class="c4-direction" role="radiogroup" aria-label="翻译方向">
+          <button class="c4-direction-btn active" type="button" role="radio" aria-checked="true" data-direction="en_to_zh_tw">
+            <span class="c4-lang">EN</span><span class="c4-arrow">→</span><span class="c4-lang c4-lang-zh">繁</span>
+            <small>English → 繁體中文</small>
+          </button>
+          <button class="c4-direction-btn" type="button" role="radio" aria-checked="false" data-direction="zh_tw_to_en">
+            <span class="c4-lang c4-lang-zh">繁</span><span class="c4-arrow">→</span><span class="c4-lang">EN</span>
+            <small>繁體中文 → English</small>
+          </button>
+        </div>
+
+        <label class="c4-dropzone" id="dropzone" for="pdfInput">
+          <input id="pdfInput" type="file" accept="application/pdf,.pdf" hidden />
+          <span class="c4-upload-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
+          </span>
+          <strong>拖放 PDF 到此处</strong>
+          <span>或点击浏览文件</span>
+          <small>扫描件与原生 PDF 均可处理</small>
+        </label>
+
+        <div class="c4-file-card" id="fileCard" hidden>
+          <span class="c4-file-icon">PDF</span>
+          <div class="c4-file-copy"><strong id="fileName"></strong><small id="fileMeta"></small></div>
+          <button type="button" id="removeFileBtn" aria-label="移除文件">×</button>
+        </div>
+
+        <button class="c4-primary-btn" id="translateBtn" type="button" disabled>
+          <span>开始翻译</span>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14m-6-6 6 6-6 6"/></svg>
+        </button>
+      </section>
+
+      <section class="c4-status-card" aria-live="polite">
+        <div class="c4-card-heading">
+          <div><span class="c4-step-label">02 / 进度</span><h2>文档处理状态</h2></div>
+          <span class="c4-status-pill" id="statusPill">等待文件</span>
+        </div>
+
+        <div class="c4-idle" id="idleState">
+          <div class="c4-page-stack" aria-hidden="true"><i></i><i></i><i></i></div>
+          <strong>译文将在这里生成</strong>
+          <p>上传文件后，将依次完成拆页、翻译与合并。</p>
+        </div>
+
+        <div class="c4-progress" id="progressState" hidden>
+          <div class="c4-progress-line"><span id="progressFill"></span></div>
+          <div class="c4-stage-grid">
+            <div class="c4-stage" data-stage="split"><i>1</i><span>拆页</span></div>
+            <div class="c4-stage" data-stage="translate"><i>2</i><span>翻译</span></div>
+            <div class="c4-stage" data-stage="merge"><i>3</i><span>合并</span></div>
+          </div>
+          <p class="c4-current-message" id="currentMessage">正在准备...</p>
+          <div class="c4-pages" id="pageList"></div>
+        </div>
+
+        <div class="c4-success" id="successState" hidden>
+          <div class="c4-success-mark">✓</div>
+          <div><span>Translation complete</span><h3>译文 PDF 已准备就绪</h3><p id="successMeta"></p></div>
+          <button class="c4-download-btn" id="downloadBtn" type="button">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"/></svg>
+            下载译文 PDF
+          </button>
+        </div>
+
+        <div class="c4-error" id="errorState" hidden>
+          <span>!</span><div><strong>翻译未完成</strong><p id="errorMessage"></p></div>
+        </div>
+      </section>
+    </div>
+    <footer class="c4-footer">AI 译文可能存在误差；金额、日期及法律条款请在正式使用前人工核对。</footer>
+  </main>
+</div>
+<script src="/static/common.js"></script>
+<script src="/static/case4.js"></script>
+</body>
+</html>
