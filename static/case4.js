@@ -17,6 +17,8 @@ const els = {
   removeFile: document.getElementById('removeFileBtn'),
   translate: document.getElementById('translateBtn'),
   reset: document.getElementById('resetBtn'),
+  mobileReset: document.getElementById('mobileResetBtn'),
+  mobileTheme: document.getElementById('mobileThemeBtn'),
   statusPill: document.getElementById('statusPill'),
   idle: document.getElementById('idleState'),
   progress: document.getElementById('progressState'),
@@ -290,6 +292,8 @@ els.removeFile.addEventListener('click', clearFile);
 els.translate.addEventListener('click', startTranslation);
 els.download.addEventListener('click', downloadResult);
 els.reset.addEventListener('click', () => { if (!state.busy || window.confirm('翻译正在进行，确定离开当前任务吗？')) window.location.reload(); });
+els.mobileReset.addEventListener('click', () => els.reset.click());
+els.mobileTheme.addEventListener('click', toggleTheme);
 ['dragenter', 'dragover'].forEach((name) => els.dropzone.addEventListener(name, (event) => { event.preventDefault(); els.dropzone.classList.add('dragover'); }));
 ['dragleave', 'drop'].forEach((name) => els.dropzone.addEventListener(name, (event) => { event.preventDefault(); els.dropzone.classList.remove('dragover'); }));
 els.dropzone.addEventListener('drop', (event) => chooseFile(event.dataTransfer.files[0]));

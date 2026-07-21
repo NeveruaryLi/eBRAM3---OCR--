@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import unittest
 from datetime import datetime
 from io import BytesIO
+from unittest.mock import AsyncMock, patch
 
 import fitz
+import httpx
+from starlette.datastructures import Headers, UploadFile
 
+from api.case4_routes import upload_translation_pdf
+from api.pdf_chat import session_metadata, session_store
 from cases.case4_pdf_translation import (
     Case4PdfDocument,
     Case4PdfTranslationHandler,
@@ -17,6 +23,8 @@ from cases.case4_pdf_translation import (
     extract_blocking_image_reference,
     render_page_png,
     validate_case4_pdf,
+    _image_bytes_from_reference,
+    _post_with_retry,
 )
 
 
@@ -58,6 +66,33 @@ class Case4ValidationTests(unittest.TestCase):
     def test_rejects_files_larger_than_25_mb(self):
         with self.assertRaisesRegex(ValueError, "25 MB"):
             validate_case4_pdf(b"%PDF-" + b"0" * (25 * 1024 * 1024), "a.pdf", "en_to_zh_tw")
+
+    def test_rejects_password_protected_pdf(self):
+        doc = fitz.open()
+        doc.new_page()
+        encrypted = doc.tobytes(
+            encryption=fitz.PDF_ENCRYPT_AES_256,
+            owner_pw="owner",
+            user_pw="secret",
+        )
+        doc.close()
+        with self.assertRaisesRegex(ValueError, "加密"):
+            validate_case4_pdf(encrypted, "protected.pdf", "en_to_zh_tw")
+
+    def test_upload_endpoint_persists_case4_metadata(self):
+        upload = UploadFile(
+            BytesIO(_pdf_bytes([(300, 500), (300, 500)])),
+            filename="contract.pdf",
+            headers=Headers({"content-type": "application/pdf"}),
+        )
+        result = asyncio.run(upload_translation_pdf(upload, "zh_tw_to_en"))
+        try:
+            self.assertEqual(result["page_count"], 2)
+            self.assertEqual(session_metadata[result["session_id"]]["case_type"], "case4")
+            self.assertIsInstance(session_store[result["session_id"]][0], Case4PdfDocument)
+        finally:
+            session_store.pop(result["session_id"], None)
+            session_metadata.pop(result["session_id"], None)
 
 
 class AgentContractTests(unittest.TestCase):
@@ -103,6 +138,61 @@ class AgentContractTests(unittest.TestCase):
             extract_assistant_image_reference(response, message_id="reply-1"),
             assistant_url,
         )
+
+    def test_base64_output_is_decoded_and_unofficial_url_is_rejected(self):
+        png = _png_bytes()
+        decoded = asyncio.run(_image_bytes_from_reference(
+            None,
+            {"base64_content": base64.b64encode(png).decode("ascii"), "format": "png"},
+        ))
+        self.assertEqual(decoded, png)
+        with self.assertRaisesRegex(ValueError, "官方"):
+            asyncio.run(_image_bytes_from_reference(None, "https://example.com/output.png"))
+
+    def test_retryable_statuses_are_retried_but_401_is_not(self):
+        statuses = iter([429, 500, 200])
+        calls = 0
+
+        def retry_transport(request):
+            nonlocal calls
+            calls += 1
+            return httpx.Response(next(statuses), json={"ok": True}, request=request)
+
+        async def retry_case():
+            async with httpx.AsyncClient(transport=httpx.MockTransport(retry_transport)) as client:
+                with patch(
+                    "cases.case4_pdf_translation.asyncio.sleep",
+                    new=AsyncMock(),
+                ):
+                    return await _post_with_retry(
+                        client,
+                        "https://api-sg.gptbots.ai/v2/conversation/message",
+                        headers={},
+                        json={},
+                    )
+
+        self.assertEqual(asyncio.run(retry_case()).status_code, 200)
+        self.assertEqual(calls, 3)
+
+        unauthorized_calls = 0
+
+        def unauthorized_transport(request):
+            nonlocal unauthorized_calls
+            unauthorized_calls += 1
+            return httpx.Response(401, json={}, request=request)
+
+        async def unauthorized_case():
+            async with httpx.AsyncClient(transport=httpx.MockTransport(unauthorized_transport)) as client:
+                return await _post_with_retry(
+                    client,
+                    "https://api-sg.gptbots.ai/v2/conversation/message",
+                    headers={},
+                    json={},
+                )
+
+        with self.assertRaises(httpx.HTTPStatusError):
+            asyncio.run(unauthorized_case())
+        self.assertEqual(unauthorized_calls, 1)
 
 
 class PdfPipelineTests(unittest.TestCase):
