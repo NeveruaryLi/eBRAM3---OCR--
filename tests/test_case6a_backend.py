@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import unittest
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
@@ -36,6 +37,9 @@ class Case6AAgentContractTests(unittest.TestCase):
             payload["messages"],
             [{"role": "user", "content": [{"type": "text", "text": "What services are available?"}]}],
         )
+
+    def test_http_client_request_urls_are_not_logged_at_info(self):
+        self.assertGreaterEqual(logging.getLogger("httpx").level, logging.WARNING)
 
     def test_extracts_blocking_text_and_latest_assistant_fallback(self):
         self.assertEqual(

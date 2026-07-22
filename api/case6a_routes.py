@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -24,6 +25,8 @@ from model.config import (
 
 
 logger = logging.getLogger(__name__)
+# httpx 的 INFO 日志包含完整 URL；会话详情 URL 带 GPTBots conversation_id。
+logging.getLogger("httpx").setLevel(logging.WARNING)
 router = APIRouter(prefix="/case6a", tags=["case6a"])
 
 SESSION_TTL_SECONDS = 7200
@@ -103,22 +106,41 @@ def extract_assistant_text(payload: dict[str, Any]) -> str:
     return "\n".join(dict.fromkeys(texts))
 
 
-def extract_latest_assistant_text(payload: dict[str, Any]) -> str:
-    """从会话详情中取得最后一条含文本的 Assistant 回复。"""
+def extract_latest_assistant_message(payload: dict[str, Any]) -> tuple[str, str]:
+    """返回最后一条 Assistant 文本及稳定标识，供故障恢复排除旧回复。"""
     messages = payload.get("conversation_content", [])
     if not isinstance(messages, list):
-        return ""
-    for message in reversed(messages):
+        return "", ""
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
         if not isinstance(message, dict) or message.get("role") != "assistant":
             continue
         texts: list[str] = []
         _collect_text_blocks(message.get("content", []), texts)
         if texts:
-            return "\n".join(dict.fromkeys(texts))
-    return ""
+            text = "\n".join(dict.fromkeys(texts))
+            marker_value = (
+                message.get("message_id")
+                or message.get("messageId")
+                or message.get("create_time")
+                or message.get("createTime")
+            )
+            if marker_value is None:
+                digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+                marker_value = f"fallback-{index}-{digest}"
+            return str(marker_value), text
+    return "", ""
 
 
-async def _conversation_detail(client: httpx.AsyncClient, conversation_id: str) -> str:
+def extract_latest_assistant_text(payload: dict[str, Any]) -> str:
+    """从会话详情中取得最后一条含文本的 Assistant 回复。"""
+    return extract_latest_assistant_message(payload)[1]
+
+
+async def _conversation_detail(
+    client: httpx.AsyncClient,
+    conversation_id: str,
+) -> tuple[str | None, str]:
     try:
         response = await client.get(
             MESSAGES_URL,
@@ -126,10 +148,10 @@ async def _conversation_detail(client: httpx.AsyncClient, conversation_id: str) 
             params={"conversation_id": conversation_id, "page": 1, "page_size": 100},
         )
         if response.status_code >= 400:
-            return ""
-        return extract_latest_assistant_text(response.json())
+            return None, ""
+        return extract_latest_assistant_message(response.json())
     except (httpx.HTTPError, ValueError):
-        return ""
+        return None, ""
 
 
 async def _create_gptbots_conversation(user_id: str) -> str:
@@ -174,6 +196,7 @@ async def _send_agent_k_message(conversation_id: str, message: str) -> str:
     payload = build_agent_k_payload(conversation_id, message)
     delay = 1.0
     async with httpx.AsyncClient(timeout=GPTBOTS_TIMEOUT_SECONDS) as client:
+        baseline_marker, _ = await _conversation_detail(client, conversation_id)
         for attempt in range(3):
             try:
                 response = await client.post(
@@ -182,8 +205,12 @@ async def _send_agent_k_message(conversation_id: str, message: str) -> str:
                     json=payload,
                 )
             except (httpx.TimeoutException, httpx.RequestError) as exc:
-                recovered = await _conversation_detail(client, conversation_id)
-                if recovered:
+                recovered_marker, recovered = await _conversation_detail(client, conversation_id)
+                if (
+                    baseline_marker is not None
+                    and recovered
+                    and recovered_marker != baseline_marker
+                ):
                     return recovered
                 code = "AGENT_TIMEOUT" if isinstance(exc, httpx.TimeoutException) else "AGENT_UNAVAILABLE"
                 status = 504 if code == "AGENT_TIMEOUT" else 503
@@ -198,8 +225,12 @@ async def _send_agent_k_message(conversation_id: str, message: str) -> str:
                 continue
 
             if response.status_code >= 500:
-                recovered = await _conversation_detail(client, conversation_id)
-                if recovered:
+                recovered_marker, recovered = await _conversation_detail(client, conversation_id)
+                if (
+                    baseline_marker is not None
+                    and recovered
+                    and recovered_marker != baseline_marker
+                ):
                     return recovered
                 raise _error(503, "AGENT_UNAVAILABLE", "服务当前不可用，请稍后重试。")
             if response.status_code in (401, 403):
@@ -212,7 +243,9 @@ async def _send_agent_k_message(conversation_id: str, message: str) -> str:
             except ValueError:
                 answer = ""
             if not answer:
-                answer = await _conversation_detail(client, conversation_id)
+                response_marker, response_text = await _conversation_detail(client, conversation_id)
+                if baseline_marker is None or response_marker != baseline_marker:
+                    answer = response_text
             if not answer:
                 raise _error(502, "AGENT_EMPTY_RESPONSE", "服务未返回有效答案，请稍后重试。")
             return answer
