@@ -16,6 +16,7 @@ from api.case6a_routes import (
     create_case6a_session,
     delete_case6a_session,
     extract_assistant_text,
+    extract_latest_assistant_message,
     extract_latest_assistant_text,
 )
 
@@ -54,6 +55,33 @@ class Case6AAgentContractTests(unittest.TestCase):
             ]
         }
         self.assertEqual(extract_latest_assistant_text(detail), "Latest")
+        marker, text = extract_latest_assistant_message(detail)
+        self.assertEqual(text, "Latest")
+        self.assertNotEqual(marker, "")
+
+    def test_assistant_message_marker_distinguishes_new_replies(self):
+        old = {
+            "conversation_content": [
+                {
+                    "role": "assistant",
+                    "message_id": "reply-old",
+                    "content": [{"type": "text", "text": "Old answer"}],
+                }
+            ]
+        }
+        new = {
+            "conversation_content": old["conversation_content"] + [
+                {
+                    "role": "assistant",
+                    "message_id": "reply-new",
+                    "content": [{"type": "text", "text": "New answer"}],
+                }
+            ]
+        }
+        old_marker, _ = extract_latest_assistant_message(old)
+        new_marker, new_text = extract_latest_assistant_message(new)
+        self.assertEqual(old_marker, "reply-old")
+        self.assertEqual((new_marker, new_text), ("reply-new", "New answer"))
 
     def test_create_session_hides_gptbots_conversation_id(self):
         with patch("api.case6a_routes.AGENT_K_API_KEY", "test-key"), patch(
