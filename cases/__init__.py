@@ -11,6 +11,7 @@ from __future__ import annotations
 from cases.base import CaseHandler
 from cases.case1_party_questions import Case1Handler
 from cases.case2_mediator_briefing import Case2MediatorBriefingHandler
+from cases.case4_pdf_translation import Case4PdfTranslationHandler
 from cases.case5_hklii_search import Case5HkliiSearchHandler
 
 # ── Case 注册表 ───────────────────────────────────────────────────────────────
@@ -20,6 +21,7 @@ from cases.case5_hklii_search import Case5HkliiSearchHandler
 REGISTRY: dict[str, type[CaseHandler]] = {
     "case1": Case1Handler,
     "case2": Case2MediatorBriefingHandler,
+    "case4": Case4PdfTranslationHandler,
     "case5": Case5HkliiSearchHandler,
 }
 

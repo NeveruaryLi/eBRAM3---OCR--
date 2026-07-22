@@ -18,6 +18,7 @@ API_KEY: str = _env("api_key") or _env("API_KEY")
 AGENT_B_API_KEY: str = _env("AGENT_B_API_KEY")
 AGENT_C_API_KEY: str = _env("AGENT_C_API_KEY")   # Case 2 调解员简报 Agent
 AGENT_J_API_KEY: str = _env("AGENT_J_API_KEY")   # Case 5 HKLII 摘要 Agent
+AGENT_I_API_KEY: str = _env("AGENT_I_API_KEY")   # Case 4 PDF 图片翻译 Agent
 
 MESSAGE_URL: str = _env(
     "base_url",
@@ -27,6 +28,11 @@ MESSAGE_URL: str = _env(
 CREATE_URL: str = _env(
     "create_conversation_url",
     "https://api-sg.gptbots.ai/v1/conversation",
+)
+
+MESSAGES_URL: str = _env(
+    "messages_url",
+    "https://api-sg.gptbots.ai/v2/messages",
 )
 
 DEFAULT_USER_ID: str = _env("gptbots_user_id", "local_user")
@@ -89,6 +95,14 @@ def agent_j_auth_headers() -> dict[str, str]:
     """构造调用 Agent J GPTBots API 所需的请求头（Case 5 HKLII 摘要）。"""
     return {
         "Authorization": f"Bearer {AGENT_J_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+
+def agent_i_auth_headers() -> dict[str, str]:
+    """构造调用 Agent I（Case 4 PDF 图片翻译）所需的请求头。"""
+    return {
+        "Authorization": f"Bearer {AGENT_I_API_KEY}",
         "Content-Type": "application/json",
     }
 

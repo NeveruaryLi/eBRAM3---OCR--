@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.case5_routes import router as case5_router
+from api.case4_routes import router as case4_router
 from api.chat import router as chat_router
 from api.graph_route import router as graph_router
 from api.pdf_chat import router as pdf_router, start_cleanup_task
@@ -43,6 +44,7 @@ app = FastAPI(title="eBRAM AI 文档助手", lifespan=lifespan)
 app.include_router(chat_router)
 app.include_router(graph_router)
 app.include_router(pdf_router)
+app.include_router(case4_router)
 app.include_router(case5_router)
 
 # ── 静态文件（前端资源）──────────────────────────────────────────────────────
@@ -71,6 +73,12 @@ async def case2():
 async def case5():
     """Case 5：HKLII 案例检索页面。"""
     return FileResponse("static/case5.html")
+
+
+@app.get("/case4")
+async def case4():
+    """Case 4：英繁双向 PDF 翻译页面。"""
+    return FileResponse("static/case4.html")
 
 
 if __name__ == "__main__":
