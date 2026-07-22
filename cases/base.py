@@ -2,7 +2,7 @@
 cases/base.py — CaseHandler 抽象基类 + SseEvent 数据类
 
 所有 Case Handler 必须继承 CaseHandler 并实现全部四个抽象方法。
-本文件是 7 个 Case 的契约基石，内容经确认后不再修改。
+本文件是所有已注册 Case 的统一契约基石。
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ class SseEvent:
         docstring 记录本 Case 使用的具体字段。
 
     设计约定（路由层事件 vs Handler 事件）：
-        路由层发送（不经过本类）：analysis_start / analysis_complete / error
+        路由层发送（不经过本类）：analyze_start / analyze_complete / fatal_error
         Handler 产出（本类实例）：progress / result / error
     """
     type: str            # "progress" | "result" | "error"
@@ -76,9 +76,9 @@ class CaseHandler(ABC):
         综合分析 session 内所有文档，逐步产出 SseEvent。
 
         路由层在调用前后负责发送（不在 Handler 里）：
-            {"type": "analysis_start",    ...}  # async for 启动前
-            {"type": "analysis_complete", ...}  # generator 正常耗尽后
-            {"type": "error",             ...}  # 未捕获异常逃逸时
+            {"type": "analyze_start",    ...}  # async for 启动前
+            {"type": "analyze_complete", ...}  # generator 正常耗尽后
+            {"type": "fatal_error",      ...}  # 未捕获异常逃逸时
 
         Handler 产出的事件约定：
 
@@ -116,15 +116,15 @@ class CaseHandler(ABC):
 
         Args:
             result_key: 必须是 get_downloadable_keys() 返回列表中的合法值。
-                        路由层在调用此方法前应先调用 get_downloadable_keys()
-                        验证合法性，非法值返回 HTTP 400，不进入此方法。
-                        Case 1: "甲方" | "乙方"
-                        Case 2: "briefing"
-            output_format: "pdf"（优先）或 "docx"（降级或显式请求）
+                        Case 1: "甲方" | "乙方" | "通用"
+                        Case 2: "调解员简报"
+                        Case 4: "译文PDF"
+                        Case 5: "HKLII 案例摘要"
+            output_format: Case 1/2/5 支持 "pdf" 或 "docx"；Case 4 仅支持 "pdf"。
 
         Returns:
-            (file_bytes, media_type, download_filename)
-            例：(b"...", "application/pdf", "10 Questions for Party A.pdf")
+            (file_bytes, download_filename, media_type)
+            例：(b"...", "10 Questions for Party A.pdf", "application/pdf")
         """
         ...
 
@@ -173,6 +173,8 @@ class CaseHandler(ABC):
         同步方法（当前内存查询足够，引入持久化时改为 async）。
 
         Case 1 示例：["甲方", "乙方"]（乙方失败则仅 ["甲方"]）
-        Case 2 示例：["briefing"]
+        Case 2 示例：["调解员简报"]
+        Case 4 示例：["译文PDF"]
+        Case 5 示例：["HKLII 案例摘要"]
         """
         ...

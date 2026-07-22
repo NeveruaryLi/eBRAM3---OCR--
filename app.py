@@ -65,7 +65,7 @@ async def case1():
 
 @app.get("/case2")
 async def case2():
-    """Case 2：调解员简报页面（前端占位，后端开发中）。"""
+    """Case 2：调解员简报页面。"""
     return FileResponse("static/case2.html")
 
 

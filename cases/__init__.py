@@ -2,7 +2,7 @@
 cases/__init__.py — Case 注册表 + Handler 工厂函数
 
 新增 Case 时只需：
-    1. 在 cases/ 下新建实现文件（如 case2_mediator_briefing.py）
+    1. 在 cases/ 下新建实现文件（如 case6b_material_processing.py）
     2. 在 REGISTRY 中注册对应的 case_type 字符串
 路由层通过 get_handler(case_type) 获取 Handler，不感知具体实现类。
 """
@@ -31,7 +31,7 @@ def get_handler(case_type: str) -> CaseHandler:
     工厂函数：根据 case_type 字符串返回对应 CaseHandler 实例。
 
     Args:
-        case_type: 与 session_metadata["case_type"] 一致的字符串，如 "case1"、"case2"。
+        case_type: 与 session_metadata["case_type"] 一致，如 "case1"、"case2"、"case4"、"case5"。
 
     Returns:
         对应 CaseHandler 的实例（无状态，每次调用新建）。
