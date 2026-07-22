@@ -1015,6 +1015,10 @@ html, body {
   border-color: #8b5cf6;
   box-shadow: 0 0 0 1px rgba(124,58,237,0.35), 0 8px 32px rgba(0,0,0,0.45);
 }
+.sel-card-6a:hover {
+  border-color: rgba(59,130,124,0.55);
+  box-shadow: 0 10px 30px rgba(59,130,124,0.12);
+}
 :root.light .sel-card-1:hover {
   border-color: #1B4080;
   box-shadow: 0 0 0 1px rgba(27,64,128,0.25), 0 6px 20px rgba(0,0,0,0.10);
@@ -1030,6 +1034,10 @@ html, body {
 :root.light .sel-card-5:hover {
   border-color: #6d28d9;
   box-shadow: 0 0 0 1px rgba(109,40,217,0.22), 0 6px 20px rgba(0,0,0,0.10);
+}
+:root.light .sel-card-6a:hover {
+  border-color: rgba(40,106,101,0.42);
+  box-shadow: 0 8px 24px rgba(40,106,101,0.1);
 }
 
 .sel-card-badge {
@@ -1064,6 +1072,8 @@ html, body {
   border: 1px solid rgba(46,93,59,0.22);
 }
 :root.light .sel-badge-4 { background: rgba(139,100,47,0.09); color: #8b642f; border: 1px solid rgba(139,100,47,0.22); }
+.sel-badge-6a { background: rgba(79,157,149,0.13); color: #70c2b9; border: 1px solid rgba(79,157,149,0.25); }
+:root.light .sel-badge-6a { background: rgba(40,106,101,0.09); color: #286a65; border-color: rgba(40,106,101,0.2); }
 
 .sel-card-icon {
   width: 40px;
@@ -1080,6 +1090,8 @@ html, body {
 :root.light .sel-icon-1 { background: rgba(27,64,128,0.09); color: #1B4080; }
 :root.light .sel-icon-2 { background: rgba(46,93,59,0.09); color: #2E5D3B; }
 :root.light .sel-icon-4 { background: rgba(139,100,47,0.09); color: #8b642f; }
+.sel-icon-6a { background: rgba(79,157,149,0.12); color: #70c2b9; }
+:root.light .sel-icon-6a { background: rgba(40,106,101,0.09); color: #286a65; }
 
 .sel-card-title {
   font-size: 1.05rem;
@@ -1157,6 +1169,7 @@ html, body {
 .sel-cards .sel-card:nth-child(2) { animation-delay: 0.16s; }
 .sel-cards .sel-card:nth-child(3) { animation-delay: 0.24s; }
 .sel-cards .sel-card:nth-child(4) { animation-delay: 0.32s; }
+.sel-cards .sel-card:nth-child(5) { animation-delay: 0.40s; }
 @media (prefers-reduced-motion: reduce) {
   .sel-hero, .sel-card { animation: none; }
 }
