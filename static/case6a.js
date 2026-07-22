@@ -306,6 +306,7 @@ async function sendQuestion(prefilled) {
   if (session.expired) {
     session = createLocalSession();
     currentSessionId = session.id;
+    renderCurrentSession();
   }
 
   addMessage('user', message);

@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
+import httpx
 
 from api.case6a_routes import (
     Case6AChatBody,
@@ -19,6 +20,7 @@ from api.case6a_routes import (
     extract_assistant_text,
     extract_latest_assistant_message,
     extract_latest_assistant_text,
+    _send_agent_k_message,
 )
 
 
@@ -150,6 +152,59 @@ class Case6AAgentContractTests(unittest.TestCase):
         response = asyncio.run(delete_case6a_session("session-1"))
         self.assertEqual(response.status_code, 204)
         self.assertNotIn("session-1", case6a_sessions)
+
+    def test_message_retries_429_and_returns_blocking_answer(self):
+        post_calls = 0
+
+        def transport(request: httpx.Request) -> httpx.Response:
+            nonlocal post_calls
+            if request.method == "GET":
+                return httpx.Response(200, json={"conversation_content": []}, request=request)
+            post_calls += 1
+            if post_calls < 3:
+                return httpx.Response(429, headers={"Retry-After": "0"}, request=request)
+            return httpx.Response(
+                200,
+                json={"output": [{"type": "text", "text": "Grounded answer"}]},
+                request=request,
+            )
+
+        real_client = httpx.AsyncClient
+        with patch(
+            "api.case6a_routes.httpx.AsyncClient",
+            side_effect=lambda **_: real_client(transport=httpx.MockTransport(transport)),
+        ), patch("api.case6a_routes.asyncio.sleep", new=AsyncMock()):
+            answer = asyncio.run(_send_agent_k_message("conv-private", "Question"))
+
+        self.assertEqual(answer, "Grounded answer")
+        self.assertEqual(post_calls, 3)
+
+    def test_server_error_never_recovers_with_previous_answer(self):
+        old_detail = {
+            "conversation_content": [
+                {
+                    "role": "assistant",
+                    "message_id": "reply-old",
+                    "content": [{"type": "text", "text": "Previous answer"}],
+                }
+            ]
+        }
+
+        def transport(request: httpx.Request) -> httpx.Response:
+            if request.method == "GET":
+                return httpx.Response(200, json=old_detail, request=request)
+            return httpx.Response(500, json={"error": "temporary"}, request=request)
+
+        real_client = httpx.AsyncClient
+        with patch(
+            "api.case6a_routes.httpx.AsyncClient",
+            side_effect=lambda **_: real_client(transport=httpx.MockTransport(transport)),
+        ):
+            with self.assertRaises(HTTPException) as error:
+                asyncio.run(_send_agent_k_message("conv-private", "New question"))
+
+        self.assertEqual(error.exception.status_code, 503)
+        self.assertEqual(error.exception.detail["code"], "AGENT_UNAVAILABLE")
 
 
 if __name__ == "__main__":
