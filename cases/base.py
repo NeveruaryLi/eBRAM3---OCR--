@@ -120,7 +120,9 @@ class CaseHandler(ABC):
                         Case 2: "调解员简报"
                         Case 4: "译文PDF"
                         Case 5: "HKLII 案例摘要"
-            output_format: Case 1/2/5 支持 "pdf" 或 "docx"；Case 4 仅支持 "pdf"。
+                        Case 6B: "协议草案"
+            output_format: Case 1/2/5/6B 支持 "pdf" 或 "docx"；
+                           Case 4 仅支持 "pdf"。
 
         Returns:
             (file_bytes, download_filename, media_type)
@@ -176,5 +178,6 @@ class CaseHandler(ABC):
         Case 2 示例：["调解员简报"]
         Case 4 示例：["译文PDF"]
         Case 5 示例：["HKLII 案例摘要"]
+        Case 6B 示例：完成 finalize 后为 ["协议草案"]
         """
         ...
