@@ -426,9 +426,53 @@ async def _ask_agent_b(
             }
         ],
     }
-    mr = await client.post(MESSAGE_URL, headers=agent_b_auth_headers(), json=payload)
-    mr.raise_for_status()
-    return extract_gptbots_reply(mr.json())
+    return await _post_agent_b_with_retry(client, payload)
+
+
+async def _post_agent_b_with_retry(
+    client: httpx.AsyncClient,
+    payload: dict,
+) -> str:
+    """发送 Agent B 消息，并对平台临时 HTTP 错误进行有限退避重试。
+
+    仅重试 429/5xx。400/401/403 等确定性请求错误立即抛出，避免无意义
+    重放。连接中断和超时也不自动重放，因为无法确认平台是否已经接收消息。
+    """
+    last_error: httpx.HTTPStatusError | None = None
+    for attempt in range(_MAX_AGENT_RETRIES):
+        response = await client.post(
+            MESSAGE_URL,
+            headers=agent_b_auth_headers(),
+            json=payload,
+        )
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            if status_code not in _RETRY_STATUS or attempt == _MAX_AGENT_RETRIES - 1:
+                raise
+
+            retry_after = exc.response.headers.get("Retry-After", "")
+            if retry_after.isdigit():
+                wait_seconds = float(retry_after)
+            else:
+                wait_seconds = float(2**attempt)
+            logger.warning(
+                "Agent B 调用返回 HTTP %d，%.0fs 后重试（第 %d/%d 次）",
+                status_code,
+                wait_seconds,
+                attempt + 1,
+                _MAX_AGENT_RETRIES,
+            )
+            last_error = exc
+            await asyncio.sleep(wait_seconds)
+            continue
+
+        return extract_gptbots_reply(response.json())
+
+    if last_error is not None:  # pragma: no cover - 循环穷尽保护
+        raise last_error
+    raise RuntimeError("Agent B 调用未返回结果")  # pragma: no cover
 
 
 async def _ask_agent_b_with_docs(
@@ -457,9 +501,7 @@ async def _ask_agent_b_with_docs(
         "response_mode": "blocking",
         "messages": [{"role": "user", "content": content}],
     }
-    mr = await client.post(MESSAGE_URL, headers=agent_b_auth_headers(), json=payload)
-    mr.raise_for_status()
-    return extract_gptbots_reply(mr.json())
+    return await _post_agent_b_with_retry(client, payload)
 
 
 # TODO: 引入持久化后移除 fallback "case1"，case_type 必须显式存取
