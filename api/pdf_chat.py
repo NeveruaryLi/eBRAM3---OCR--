@@ -17,7 +17,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from model.config import (
     CREATE_URL,
@@ -75,6 +75,16 @@ session_results_store: dict[str, Any] = {}
 # session_id → 会话元数据（case_type 等）
 # 与 session_store / session_results_store 同步 TTL 清理
 session_metadata: dict[str, dict] = {}   # {sid: {"case_type": str, ...}}
+
+
+@router.delete("/session/{session_id}", status_code=204)
+async def delete_pdf_session(session_id: str) -> Response:
+    """幂等清理 Case 1/2/5 共用的应用侧会话缓存。"""
+    session_store.pop(session_id, None)
+    session_results_store.pop(session_id, None)
+    session_metadata.pop(session_id, None)
+    logger.info("PDF 会话已重置：session=%s", session_id[:8])
+    return Response(status_code=204)
 
 
 async def start_cleanup_task() -> None:

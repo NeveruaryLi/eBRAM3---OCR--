@@ -219,6 +219,8 @@
   .c6-mobile-header small { color: var(--text-muted); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
   .c6-mobile-status { width: 8px; height: 8px; border-radius: 50%; background: var(--c6-accent); box-shadow: 0 0 0 3px var(--c6-accent-soft); }
   .c6-icon-btn { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--text); }
+  .c6-icon-btn:disabled { opacity: .42; cursor: not-allowed; }
+  .c6-mobile-reset { flex: 0 0 auto; color: var(--c6-accent); }
   .c6-sidebar {
     position: fixed;
     inset: 0 auto 0 0;

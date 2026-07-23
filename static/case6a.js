@@ -15,10 +15,12 @@ const sendBtn = document.getElementById('sendBtn');
 const assistantStatus = document.getElementById('assistantStatus');
 const historyList = document.getElementById('historyList');
 const newChatBtn = document.getElementById('newChatBtn');
+const resetConversationBtn = document.getElementById('resetConversationBtn');
 const charCount = document.getElementById('charCount');
 const sidebar = document.getElementById('sidebar');
 const sidebarToggle = document.getElementById('sidebarToggle');
 const sidebarOverlay = document.getElementById('sidebarOverlay');
+const mobileResetBtn = document.getElementById('mobileResetBtn');
 
 let sessions = [];
 let currentSessionId = null;
@@ -256,6 +258,41 @@ function startNewConversation() {
   textInput.focus();
 }
 
+async function resetCurrentConversation() {
+  if (busy) return;
+  const session = getCurrentSession();
+  if (!session) return;
+  const hasContent = session.messages.length > 0 || Boolean(session.backendSessionId);
+  if (hasContent && !confirm('确定重置当前对话吗？当前消息和服务上下文将被清空。')) return;
+
+  const backendSessionId = session.backendSessionId;
+  session.messages = [];
+  session.title = '新对话';
+  session.backendSessionId = null;
+  session.expired = false;
+  session.updatedAt = Date.now();
+  saveSessions();
+  renderCurrentSession();
+  closeSidebar();
+  textInput.value = '';
+  updateComposer();
+  textInput.focus();
+
+  if (backendSessionId) {
+    try {
+      const response = await fetch(
+        `/case6a/session/${encodeURIComponent(backendSessionId)}`,
+        { method: 'DELETE' },
+      );
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch {
+      toast('当前对话已重置；服务端缓存将在两小时内自动清理');
+      return;
+    }
+  }
+  toast('当前对话已重置');
+}
+
 async function requestJson(url, options) {
   const response = await fetch(url, options);
   let payload = {};
@@ -288,6 +325,8 @@ function setBusy(value) {
   busy = value;
   textInput.disabled = value;
   assistantStatus.hidden = !value;
+  resetConversationBtn.disabled = value;
+  mobileResetBtn.disabled = value;
   updateComposer();
 }
 
@@ -367,6 +406,8 @@ textInput.addEventListener('keydown', event => {
 });
 sendBtn.addEventListener('click', () => sendQuestion());
 newChatBtn.addEventListener('click', startNewConversation);
+resetConversationBtn.addEventListener('click', resetCurrentConversation);
+mobileResetBtn.addEventListener('click', resetCurrentConversation);
 document.querySelectorAll('.c6-suggestion').forEach(button => {
   button.addEventListener('click', () => sendQuestion(button.dataset.question));
 });

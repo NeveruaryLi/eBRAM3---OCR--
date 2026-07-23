@@ -38,6 +38,7 @@ const progressRatio = document.getElementById('progressRatio');
 const progressFill  = document.getElementById('progressFill');
 const progressDots  = document.getElementById('progressDots');
 const newChatBtn    = document.getElementById('newChatBtn');
+const resetConversationBtn = document.getElementById('resetConversationBtn');
 const historyList   = document.getElementById('historyList');
 
 // 搜索区
@@ -98,6 +99,7 @@ function setBusy(val) {
   textInput.disabled = val;
   searchBtn.disabled = val;
   keywordInput.disabled = val;
+  resetConversationBtn.disabled = val;
   updateAnalyzeBtnState();
 }
 
@@ -865,7 +867,8 @@ function extractReply(data) {
 }
 
 // ── 重置当前视图 ──────────────────────────────────────────────────────────────
-function resetCurrentView() {
+function resetCurrentView({ preserveHistory = false } = {}) {
+  const preservedSessionId = preserveHistory ? currentSessionId : null;
   messagesList.innerHTML = '';
   welcome.hidden = false;
   hideProgress();
@@ -893,7 +896,43 @@ function resetCurrentView() {
   if (searchToggle)   searchToggle.hidden = true;
 
   currentConversationId = null;
-  currentSessionId      = null;
+  currentSessionId      = preservedSessionId;
+}
+
+async function resetCurrentConversation() {
+  if (busy) return;
+  const session = getCurrentSession();
+  if (!session) return;
+  const hasContent = (
+    session.messages.length > 0
+    || Boolean(scrapeSessionId)
+    || scrapedResults.length > 0
+    || Boolean(summaryResult)
+    || keywordInput.value.trim().length > 0
+  );
+  if (hasContent && !confirm('确定重置当前对话吗？消息、检索结果和摘要将被清空。')) return;
+
+  const backendSessionId = scrapeSessionId;
+  resetCurrentView({ preserveHistory: true });
+  session.messages = [];
+  session.title = '新对话';
+  session.conversationId = null;
+  session.updatedAt = Date.now();
+  saveSessions();
+  renderHistoryList();
+
+  if (backendSessionId) {
+    try {
+      const response = await fetch(`/pdf/session/${encodeURIComponent(backendSessionId)}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch {
+      toast('当前对话已重置；服务端缓存将在两小时内自动清理');
+      return;
+    }
+  }
+  toast('当前对话已重置');
 }
 
 // ── 事件绑定 ──────────────────────────────────────────────────────────────────
@@ -938,6 +977,7 @@ newChatBtn.addEventListener('click', () => {
   createNewSession();
   renderHistoryList();
 });
+resetConversationBtn.addEventListener('click', resetCurrentConversation);
 
 // ── 初始化 ────────────────────────────────────────────────────────────────────
 loadSessions();

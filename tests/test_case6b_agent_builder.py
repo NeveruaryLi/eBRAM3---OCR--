@@ -4,7 +4,9 @@ import importlib.util
 import json
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +19,16 @@ def _load_builder_module():
     spec = importlib.util.spec_from_file_location("build_case6b_agent", BUILDER_PATH)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Cannot load builder at {BUILDER_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_poc_module():
+    path = CASE6B_DIR / "run_case6b_poc.py"
+    spec = importlib.util.spec_from_file_location("run_case6b_poc", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load POC runner at {path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -140,6 +152,68 @@ class Case6BAgentBuilderTests(unittest.TestCase):
             sum(field["status"] == "LEAVE_BLANK" for field in expected_fields),
             6,
         )
+
+    def test_unknown_delivery_recovers_new_message_without_resending(self):
+        poc = _load_poc_module()
+        client = poc.AgentLClient("sg", "test-key")
+        error = RuntimeError("GPTBots connection timed out")
+        error.status_code = None
+        baseline = [("old-message", '{"old":true}')]
+        recovered = baseline + [("new-message", '{"phase":"TEMPLATE_PARSE"}')]
+
+        with (
+            patch.object(client, "messages", side_effect=[baseline, recovered]),
+            patch.object(poc, "_http_json", side_effect=error) as http_json,
+        ):
+            result, marker = client.send(
+                "conversation",
+                [{"type": "text", "text": "[CASE6B_PHASE:TEMPLATE_PARSE]"}],
+            )
+
+        self.assertEqual(result, {"phase": "TEMPLATE_PARSE"})
+        self.assertEqual(marker, "new-message")
+        self.assertEqual(http_json.call_count, 1)
+
+    def test_network_timeout_is_exposed_as_unknown_delivery(self):
+        poc = _load_poc_module()
+        with patch.object(
+            poc.urllib.request,
+            "urlopen",
+            side_effect=urllib.error.URLError("timed out"),
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                poc._http_json("https://example.invalid", "test-key")
+
+        self.assertIsNone(getattr(raised.exception, "status_code", "missing"))
+        self.assertTrue(getattr(raised.exception, "delivery_unknown", False))
+
+    def test_rate_limit_retries_only_when_no_new_message_exists(self):
+        poc = _load_poc_module()
+        client = poc.AgentLClient("sg", "test-key")
+        rate_limited = RuntimeError("GPTBots HTTP 429")
+        rate_limited.status_code = 429
+        baseline = [("old-message", '{"old":true}')]
+
+        with (
+            patch.object(
+                client,
+                "messages",
+                side_effect=[baseline, baseline, baseline],
+            ),
+            patch.object(
+                poc,
+                "_http_json",
+                side_effect=[rate_limited, {"answer": '{"ok":true}'}],
+            ) as http_json,
+            patch.object(poc.time, "sleep"),
+        ):
+            result, _ = client.send(
+                "conversation",
+                [{"type": "text", "text": "[CASE6B_PHASE:TEMPLATE_PARSE]"}],
+            )
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(http_json.call_count, 2)
 
 
 if __name__ == "__main__":

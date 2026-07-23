@@ -38,6 +38,7 @@ const progressFill  = document.getElementById('progressFill');
 const progressDots  = document.getElementById('progressDots');
 const dragOverlay    = document.getElementById('dragOverlay');
 const newChatBtn     = document.getElementById('newChatBtn');
+const resetConversationBtn = document.getElementById('resetConversationBtn');
 const historyList    = document.getElementById('historyList');
 const fileQueuePanel = document.getElementById('fileQueuePanel');
 const fqList         = document.getElementById('fqList');
@@ -99,6 +100,7 @@ function setBusy(val) {
   sendBtn.disabled = val || textInput.value.trim().length === 0;
   textInput.disabled = val;
   fileInput.disabled = val;
+  resetConversationBtn.disabled = val;
   updateProcessBtn();
   updateAnalyzeBtn();
 }
@@ -610,7 +612,8 @@ function hideAllReportButtons() {
 /**
  * 重置当前页面状态（等同于"新对话"，但不创建历史记录条目）。
  */
-function resetCurrentView() {
+function resetCurrentView({ preserveHistory = false } = {}) {
+  const preservedSessionId = preserveHistory ? currentSessionId : null;
   messagesList.innerHTML = '';
   welcome.hidden = false;
   hideProgress();
@@ -635,7 +638,42 @@ function resetCurrentView() {
   hideAllReportButtons();
   // 断开与历史会话的关联（不新增条目）
   currentConversationId = null;
-  currentSessionId      = null;
+  currentSessionId      = preservedSessionId;
+}
+
+async function resetCurrentConversation() {
+  if (busy) return;
+  const session = getCurrentSession();
+  if (!session) return;
+  const hasContent = (
+    session.messages.length > 0
+    || fileQueue.length > 0
+    || Boolean(multiSessionId)
+    || Object.keys(analysisResults).length > 0
+  );
+  if (hasContent && !confirm('确定重置当前对话吗？消息、文件和分析结果将被清空。')) return;
+
+  const backendSessionId = multiSessionId;
+  resetCurrentView({ preserveHistory: true });
+  session.messages = [];
+  session.title = '新对话';
+  session.conversationId = null;
+  session.updatedAt = Date.now();
+  saveSessions();
+  renderHistoryList();
+
+  if (backendSessionId) {
+    try {
+      const response = await fetch(`/pdf/session/${encodeURIComponent(backendSessionId)}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch {
+      toast('当前对话已重置；服务端缓存将在两小时内自动清理');
+      return;
+    }
+  }
+  toast('当前对话已重置');
 }
 
 // ── 历史记录三点下拉菜单 ─────────────────────────────────────────────────────
@@ -1342,6 +1380,7 @@ newChatBtn.addEventListener('click', () => {
   createNewSession();
   renderHistoryList();
 });
+resetConversationBtn.addEventListener('click', resetCurrentConversation);
 
 // ── 初始化 ────────────────────────────────────────────────────────────────────
 loadSessions();

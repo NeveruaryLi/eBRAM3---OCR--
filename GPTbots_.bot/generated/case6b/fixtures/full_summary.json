@@ -1,0 +1,101 @@
+{
+  "summary_version": "case6b-poc-r1",
+  "language": "en",
+  "sources": [
+    {
+      "filename": "UC6B_1_email_01_initial_inquiry.png",
+      "source_type": "email",
+      "facts": [
+        "ClientCo Limited, CR No. 3234567.",
+        "Client address: Unit 1905, 19/F, Silver Tower, 88 Gloucester Road, Wanchai, Hong Kong.",
+        "Approximately 85 Windows/macOS users; the message was an initial inquiry with no commitment."
+      ]
+    },
+    {
+      "filename": "UC6B_2_email_02_offer.png",
+      "source_type": "formal_email",
+      "facts": [
+        "ServiceStar Solutions Limited, CR No. 2897654.",
+        "Service provider address: 21/F, Prosperity Tower, 39 Queen's Road Central, Hong Kong.",
+        "Offer scope: 8x5 remote helpdesk, endpoint patching, Microsoft 365 tenant administration, monthly KPI reporting.",
+        "Term: 12 months commencing upon contract execution.",
+        "Price: HKD 68,000 per month, invoiced monthly in arrears, Net 30 days.",
+        "SLA: P1 response 2 hours, P2 4 hours, P3 next business day; remote only."
+      ]
+    },
+    {
+      "filename": "UC6B_3_email_03_acceptance_in_principle.png",
+      "source_type": "formal_email",
+      "facts": [
+        "ClientCo accepted the stated scope, SLA, term and pricing in principle on 14 Jan 2026.",
+        "Legal relations are intended only upon signing the formal MSA and SOW.",
+        "The email requested editable Word drafts for legal review."
+      ]
+    },
+    {
+      "filename": "UC6B_4_Milestones, Dates & Consideration Schedule.xlsx",
+      "source_type": "structured_schedule",
+      "facts": [
+        "Kickoff target: 20 Jan 2026; onboarding completion target: 05 Feb 2026.",
+        "Month 1 and Month 2 service delivery each trigger HKD 68,000.",
+        "Monthly report plus invoice is the monthly acceptance evidence.",
+        "The schedule does not state an amount payable at contract signing or at final completion."
+      ]
+    },
+    {
+      "filename": "UC6B_5_Scope, Service Components & Pricing Breakdown.xlsx",
+      "source_type": "structured_pricing",
+      "facts": [
+        "Included: Remote Helpdesk (8x5), monthly value HKD 20,000.",
+        "Included: Endpoint Patching, monthly value HKD 16,000.",
+        "Included: M365 Tenant Admin, monthly value HKD 22,000.",
+        "Included: Monthly Reporting, monthly value HKD 10,000.",
+        "Asset Inventory and On-site Support are optional and not included.",
+        "The four included monthly values total HKD 68,000."
+      ]
+    },
+    {
+      "filename": "UC6B_6_Heads of Terms.pdf",
+      "source_type": "heads_of_terms",
+      "facts": [
+        "Parties: ClientCo Limited and ServiceStar Solutions Limited.",
+        "Scope, 12-month term, HKD 68,000 monthly fee, monthly arrears and Net 30 terms are confirmed subject to contract.",
+        "No binding obligations arise until contract signature.",
+        "No effective date, exact agreement end date, termination notice period or return-of-materials period is supplied."
+      ]
+    },
+    {
+      "filename": "UC6B_7_Meeting Minutes.pdf",
+      "source_type": "meeting_minutes",
+      "facts": [
+        "The parties agreed to draft an MSA and SOW; acceptance becomes binding only on signing.",
+        "HKD 68,000 per month, Net 30, invoiced monthly in arrears was confirmed subject to contract.",
+        "Target service start is February 2026 after onboarding.",
+        "The minutes do not establish an effective date, exact agreement end date, termination notice period or return-of-materials period."
+      ]
+    },
+    {
+      "filename": "UC6B_8_Scanned_note.png",
+      "source_type": "informal_note",
+      "facts": [
+        "Phone-call note records intent to proceed to contract subject to legal review.",
+        "It repeats HKD 68,000 per month, remote-only scope, Net 30, monthly invoicing in arrears."
+      ]
+    },
+    {
+      "filename": "UC6B_9_Teams_chatlog.jfif",
+      "source_type": "chat",
+      "facts": [
+        "Chat repeats HKD 68,000 per month and SLA P1 2h, P2 4h, P3 next business day.",
+        "ClientCo says acceptance was sent in principle and requests a draft MSA."
+      ]
+    }
+  ],
+  "conflicts": [],
+  "drafting_constraints": [
+    "All material remains subject to contract until signature.",
+    "Do not use optional services as included services.",
+    "Do not calculate an exact end date without an effective date.",
+    "Do not invent signing payments, completion payments, notice periods or return periods."
+  ]
+}
