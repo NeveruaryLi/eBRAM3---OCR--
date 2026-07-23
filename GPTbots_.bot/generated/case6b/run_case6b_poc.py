@@ -341,6 +341,59 @@ def _placeholder_input(manifest: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _write_evaluation(
+    *,
+    args: argparse.Namespace,
+    field_list: dict[str, Any],
+    fill_result: dict[str, Any],
+    first_trace: dict[str, Any],
+    second_trace: dict[str, Any],
+    failures: list[str],
+) -> None:
+    raw_report = {
+        "generated_at_epoch": int(time.time()),
+        "endpoint": args.endpoint,
+        "field_list": field_list,
+        "fill_result": fill_result,
+        "traces": {"template_parse": first_trace, "field_fill": second_trace},
+        "failures": failures,
+        "passed": not failures,
+    }
+    args.raw_output.parent.mkdir(parents=True, exist_ok=True)
+    args.raw_output.write_text(
+        json.dumps(raw_report, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    status = "Passed" if not failures else "Failed"
+    failure_lines = "\n".join(f"- {failure}" for failure in failures) or "- None"
+    args.summary_output.write_text(
+        "\n".join(
+            [
+                "# Agent L POC Evaluation",
+                "",
+                f"Status: {status}",
+                "",
+                f"- Evaluation date: {time.strftime('%Y-%m-%d')}",
+                "- Conversation model: one private conversation, two blocking messages",
+                f"- Template fields returned: {len(field_list.get('fields', []))}",
+                f"- Filled field results returned: {len(fill_result.get('fields', []))}",
+                f"- Template parse trace: {first_trace['running_status']}",
+                f"- Field fill trace: {second_trace['running_status']}",
+                "",
+                "## Failures",
+                "",
+                failure_lines,
+                "",
+                "Full model responses and runtime identifiers are stored under ignored `output/`.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    print(f"Agent L POC: {status}; sanitized summary: {args.summary_output}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     case6b_dir = Path(__file__).resolve().parent
@@ -403,6 +456,18 @@ def main() -> None:
     )
     failures = _validate_field_list(field_list, manifest)
     first_trace = client.trace_status(first_message_id)
+    if failures:
+        _write_evaluation(
+            args=args,
+            field_list=field_list,
+            fill_result={},
+            first_trace=first_trace,
+            second_trace={"running_status": "NOT_RUN", "components": []},
+            failures=failures,
+        )
+        raise SystemExit(
+            "Agent L template parsing failed; field filling was not sent to preserve phase order"
+        )
 
     second_text = (
         "[CASE6B_PHASE:FIELD_FILL]\n"
@@ -423,48 +488,14 @@ def main() -> None:
         if trace["running_status"] not in {"SUCCESS", "UNKNOWN"}:
             failures.append(f"{label}: LogTree status {trace['running_status']}")
 
-    raw_report = {
-        "generated_at_epoch": int(time.time()),
-        "endpoint": args.endpoint,
-        "field_list": field_list,
-        "fill_result": fill_result,
-        "traces": {"template_parse": first_trace, "field_fill": second_trace},
-        "failures": failures,
-        "passed": not failures,
-    }
-    args.raw_output.parent.mkdir(parents=True, exist_ok=True)
-    args.raw_output.write_text(
-        json.dumps(raw_report, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    _write_evaluation(
+        args=args,
+        field_list=field_list,
+        fill_result=fill_result,
+        first_trace=first_trace,
+        second_trace=second_trace,
+        failures=failures,
     )
-
-    status = "Passed" if not failures else "Failed"
-    failure_lines = "\n".join(f"- {failure}" for failure in failures) or "- None"
-    args.summary_output.write_text(
-        "\n".join(
-            [
-                "# Agent L POC Evaluation",
-                "",
-                f"Status: {status}",
-                "",
-                f"- Evaluation date: {time.strftime('%Y-%m-%d')}",
-                "- Conversation model: one private conversation, two blocking messages",
-                f"- Template fields returned: {len(field_list.get('fields', []))}",
-                f"- Filled field results returned: {len(fill_result.get('fields', []))}",
-                f"- Template parse trace: {first_trace['running_status']}",
-                f"- Field fill trace: {second_trace['running_status']}",
-                "",
-                "## Failures",
-                "",
-                failure_lines,
-                "",
-                "Full model responses and runtime identifiers are stored under ignored `output/`.",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    print(f"Agent L POC: {status}; sanitized summary: {args.summary_output}")
     if failures:
         raise SystemExit("Agent L POC failed; see the sanitized evaluation summary")
 

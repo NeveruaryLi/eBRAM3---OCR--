@@ -81,7 +81,7 @@ class Case6BAgentBuilderTests(unittest.TestCase):
         rule = components[3]["regularGroups"][0]["items"][0]
         self.assertEqual(
             (rule["propertyKey"], rule["op"], rule["value"]),
-            ("sys_user_msg_count", "eq", "1"),
+            ("sys_user_msg_count", "lt", "1"),
         )
 
         for component_id, phase in (

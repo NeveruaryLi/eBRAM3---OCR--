@@ -172,7 +172,11 @@ def build_agent_config(source_path: Path, prompt_dir: Path, output_path: Path) -
     rule = groups[0]["items"][0]
     if rule.get("propertyKey") != "sys_user_msg_count":
         raise ValueError("Case 6B Regular node must route on sys_user_msg_count")
-    rule.update({"category": "GlobalVariable", "type": "number", "op": "eq", "value": "1"})
+    # Live LogTree verification shows that the Regular node sees the number of
+    # user turns completed *before* the current message: first turn = 0,
+    # second turn = 1. The original exported `lt 1` rule therefore routes only
+    # TEMPLATE_PARSE to Model-1 and every later turn to Model-2.
+    rule.update({"category": "GlobalVariable", "type": "number", "op": "lt", "value": "1"})
 
     _configure_llm(
         components[4],
