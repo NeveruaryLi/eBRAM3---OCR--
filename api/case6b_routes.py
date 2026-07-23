@@ -6,10 +6,11 @@ import asyncio
 import hashlib
 import json
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, AsyncIterator
 from uuid import uuid4
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -89,7 +90,7 @@ async def upload_case6b(
 ):
     if not 1 <= len(material_files) <= MAX_MATERIALS:
         raise _error(400, "INVALID_MATERIAL_COUNT", "事实材料数量必须为 1–20 份")
-    template_name = template_file.filename or "template.docx"
+    template_name = Path(template_file.filename or "template.docx").name
     template_bytes = await template_file.read(10 * 1024 * 1024 + 1)
     try:
         template = validate_template(template_bytes, template_name)
@@ -101,7 +102,7 @@ async def upload_case6b(
     materials = []
     hashes: set[str] = set()
     for upload in material_files:
-        filename = upload.filename or "material"
+        filename = Path(upload.filename or "material").name
         content = await upload.read(25 * 1024 * 1024 + 1)
         total_bytes += len(content)
         digest = hashlib.sha256(content).hexdigest()
@@ -156,13 +157,34 @@ async def upload_case6b(
 
 
 @router.post("/session/{session_id}/retry")
-async def retry_case6b(session_id: str):
+async def retry_case6b(
+    session_id: str,
+    material_id: str | None = Query(default=None, min_length=1, max_length=64),
+):
     session = _session(session_id)
     if session.lock.locked():
         raise _error(409, "SESSION_BUSY", "当前草案正在处理中，请稍候")
-    if not any(material.status == "failed" for material in session.materials):
+    retry_ids: set[str] | None = None
+    if material_id is not None:
+        material = next(
+            (
+                item
+                for item in session.materials
+                if item.material_id == material_id
+            ),
+            None,
+        )
+        if material is None:
+            raise _error(404, "MATERIAL_NOT_FOUND", "指定材料不存在")
+        if material.status != "failed":
+            raise _error(400, "MATERIAL_NOT_FAILED", "只能单独重试处理失败的材料")
+        retry_ids = {material_id}
+    if (
+        not any(material.status == "failed" for material in session.materials)
+        and session.fields
+    ):
         raise _error(400, "NO_FAILED_MATERIAL", "当前没有需要重试的失败材料")
-    handler = Case6BDraftingHandler()
+    handler = Case6BDraftingHandler(retry_material_ids=retry_ids)
 
     async def stream() -> AsyncIterator[str]:
         yield _sse({"type": "analysis_start", "session_id": session_id})

@@ -48,6 +48,7 @@ function setBusy(value) {
   [els.start, els.retry, els.saveReview, els.finalize, els.reset, els.newTask].forEach(button => {
     if (button) button.disabled = value;
   });
+  document.querySelectorAll('.c6b-retry-one').forEach(button => { button.disabled = value; });
   updateStartButton();
 }
 function updateStartButton() { els.start.disabled = state.busy || !state.template || state.materials.length < 1; }
@@ -151,8 +152,16 @@ function renderMaterialStatus(materials) {
     const copy = document.createElement('div'); const name = document.createElement('strong'); name.textContent = material.filename;
     const meta = document.createElement('small'); meta.textContent = material.error || `${material.units || 1} 个处理单元`;
     copy.append(name, meta); const status = document.createElement('span'); status.textContent = friendlyStatus(material.status || 'pending');
-    row.append(kind, copy, status); els.materialStatus.appendChild(row);
+    row.append(kind, copy, status);
+    if (material.status === 'failed') row.append(makeRetryButton(material.material_id));
+    els.materialStatus.appendChild(row);
   });
+}
+function makeRetryButton(materialId) {
+  const button = document.createElement('button'); button.type = 'button'; button.className = 'c6b-retry-one';
+  button.textContent = '仅重试此项'; button.disabled = state.busy;
+  button.addEventListener('click', () => retryFailed(materialId));
+  return button;
 }
 function updateMaterialEvent(event) {
   const row = els.materialStatus.querySelector(`[data-id="${CSS.escape(event.material_id || '')}"]`);
@@ -160,6 +169,9 @@ function updateMaterialEvent(event) {
   row.className = `c6b-material-row ${event.status || (event.type === 'error' ? 'failed' : 'summarizing')}`;
   row.querySelector('span').textContent = friendlyStatus(event.status || (event.type === 'error' ? 'failed' : 'summarizing'));
   if (event.message) row.querySelector('small').textContent = event.message;
+  const retry = row.querySelector('.c6b-retry-one');
+  if (event.type === 'error' && !retry) row.append(makeRetryButton(event.material_id));
+  if (event.status === 'complete' && retry) retry.remove();
 }
 function beginProgress() {
   els.idle.hidden = true; els.progress.hidden = false; els.error.hidden = true; els.reviewPanel.hidden = true; els.downloadPanel.hidden = true;
@@ -199,10 +211,11 @@ async function startWorkflow() {
     await runAnalysis('/pdf/session/analyze', { method: 'POST', body: analyze });
   } catch (error) { showError(error.message); } finally { setBusy(false); }
 }
-async function retryFailed() {
+async function retryFailed(materialId = null) {
   if (!state.sessionId || state.busy) return;
   setBusy(true); beginProgress(); els.retry.hidden = true;
-  try { await runAnalysis(`/case6b/session/${encodeURIComponent(state.sessionId)}/retry`, { method: 'POST' }); }
+  const query = materialId ? `?material_id=${encodeURIComponent(materialId)}` : '';
+  try { await runAnalysis(`/case6b/session/${encodeURIComponent(state.sessionId)}/retry${query}`, { method: 'POST' }); }
   catch (error) { showError(error.message); } finally { setBusy(false); }
 }
 function showError(message) {
@@ -260,7 +273,7 @@ function makeServiceRow(groupIndex, fields) {
 }
 function renderReview() {
   if (!state.review) return;
-  els.progress.hidden = true; els.error.hidden = true; els.reviewPanel.hidden = false; els.status.textContent = '等待审阅'; setStage('review');
+  els.progress.hidden = false; els.error.hidden = true; els.reviewPanel.hidden = false; els.status.textContent = '等待审阅'; setStage('review');
   els.fieldCount.textContent = `${state.review.fields.length} 个字段`;
   els.unresolvedCount.textContent = `${state.review.unresolved_count} 个待确认`;
   const groups = new Map();
@@ -318,7 +331,7 @@ async function download(format) {
   const response = await fetch('/pdf/session/report', { method: 'POST', body });
   if (!response.ok) { let message = `下载失败（HTTP ${response.status}）`; try { message = (await response.json()).detail || message; } catch {} toast(typeof message === 'string' ? message : message.message); return; }
   const blob = await response.blob(); const disposition = response.headers.get('Content-Disposition') || '';
-  const match = disposition.match(/filename\\*=UTF-8''([^;]+)/i); const filename = match ? decodeURIComponent(match[1]) : `service-agreement-draft.${format}`;
+  const match = disposition.match(/filename\*=UTF-8''([^;]+)/i); const filename = match ? decodeURIComponent(match[1]) : `service-agreement-draft.${format}`;
   const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = filename; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 async function resetCurrent(confirmFirst = true) {
@@ -339,7 +352,7 @@ function closeSidebar() { els.sidebar.classList.remove('open'); els.sidebarOverl
 
 bindDropzone(els.templateDropzone, els.templateInput, files => setTemplate(files[0]));
 bindDropzone(els.materialsDropzone, els.materialsInput, files => setMaterials(files));
-els.start.addEventListener('click', startWorkflow); els.retry.addEventListener('click', retryFailed);
+els.start.addEventListener('click', startWorkflow); els.retry.addEventListener('click', () => retryFailed());
 els.saveReview.addEventListener('click', saveReview); els.finalize.addEventListener('click', finalizeDraft);
 els.downloadDocx.addEventListener('click', () => download('docx')); els.downloadPdf.addEventListener('click', () => download('pdf'));
 els.reset.addEventListener('click', () => resetCurrent(true)); els.newTask.addEventListener('click', newTask);

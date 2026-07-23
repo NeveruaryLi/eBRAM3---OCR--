@@ -2,6 +2,7 @@ import io
 import json
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import fitz
 from docx import Document
@@ -18,6 +19,7 @@ from cases.case6b_service_agreement import (
     extract_template_manifest,
     extract_xlsx_markdown,
     image_to_pdf,
+    ocr_submission_filename,
     parse_agent_json,
     render_draft_docx,
     validate_material,
@@ -72,6 +74,13 @@ class Case6BCoreTests(unittest.TestCase):
         finally:
             document.close()
 
+    def test_wrapped_images_are_submitted_to_ocr_with_pdf_filename(self):
+        self.assertEqual("chat.pdf", ocr_submission_filename("chat.jfif", "image"))
+        self.assertEqual(
+            "evidence.pdf",
+            ocr_submission_filename("evidence.pdf", "pdf"),
+        )
+
     def test_agent_l_payloads_have_exact_two_phase_contract(self):
         template = validate_template(TEMPLATE.read_bytes(), TEMPLATE.name)
         manifest = extract_template_manifest(template.content)
@@ -119,6 +128,32 @@ class Case6BCoreTests(unittest.TestCase):
         self.assertEqual("1 August 2026", changed["value"])
         self.assertIsNone(session.generated_docx)
         self.assertIsNone(session.generated_pdf)
+
+    def test_unchanged_review_value_keeps_agent_evidence(self):
+        fields = json.loads((FIXTURES / "expected_fill.json").read_text("utf-8"))[
+            "fields"
+        ]
+        session = Case6BSession(
+            template=validate_template(TEMPLATE.read_bytes(), TEMPLATE.name),
+            materials=[],
+            field_manifest=json.loads(
+                (FIXTURES / "template_field_manifest.json").read_text("utf-8")
+            ),
+            fields=fields,
+            review_version=1,
+        )
+        target = next(field for field in fields if field["field_id"] == "p002_f02")
+        evidence = list(target["evidence"])
+        apply_review_changes(
+            session,
+            version=1,
+            field_updates=[
+                {"field_id": "p002_f02", "value": target["value"]}
+            ],
+            service_rows=[],
+        )
+        self.assertEqual("FILLED", target["status"])
+        self.assertEqual(evidence, target["evidence"])
 
     def test_docx_fill_preserves_signature_blanks_and_removes_unused_services(self):
         fields = json.loads((FIXTURES / "expected_fill.json").read_text("utf-8"))[
@@ -194,6 +229,103 @@ class Case6BRouteTests(unittest.TestCase):
         response = self.client.get("/case6b/session/missing/review")
         self.assertEqual(410, response.status_code)
         self.assertEqual("SESSION_EXPIRED", response.json()["detail"]["code"])
+
+    def _ready_session(self) -> str:
+        session_id = "case6b-ready"
+        manifest = json.loads(
+            (FIXTURES / "template_field_manifest.json").read_text("utf-8")
+        )
+        fields = json.loads((FIXTURES / "expected_fill.json").read_text("utf-8"))[
+            "fields"
+        ]
+        session = Case6BSession(
+            template=validate_template(TEMPLATE.read_bytes(), TEMPLATE.name),
+            materials=[],
+            field_manifest=manifest,
+            fields=fields,
+            review_version=1,
+        )
+        session_store[session_id] = [session]
+        session_metadata[session_id] = {"case_type": "case6b"}
+        session_results_store[session_id] = {
+            "case_type": "case6b",
+            "results": {"协议草案": {"conversation_id": "private"}},
+        }
+        return session_id
+
+    def test_review_rejects_stale_version_and_signature_edit(self):
+        session_id = self._ready_session()
+        stale = self.client.patch(
+            f"/case6b/session/{session_id}/review",
+            json={"version": 9, "field_updates": [], "service_rows": []},
+        )
+        self.assertEqual(409, stale.status_code)
+        signature = self.client.patch(
+            f"/case6b/session/{session_id}/review",
+            json={
+                "version": 1,
+                "field_updates": [
+                    {
+                        "field_id": "t000_r000_c000_p002_f01",
+                        "value": "signed",
+                    }
+                ],
+                "service_rows": [],
+            },
+        )
+        self.assertEqual(400, signature.status_code)
+
+    def test_finalize_requires_unresolved_confirmation_and_keeps_docx_on_pdf_failure(self):
+        session_id = self._ready_session()
+        blocked = self.client.post(
+            f"/case6b/session/{session_id}/finalize",
+            json={"version": 1, "allow_unresolved": False},
+        )
+        self.assertEqual(409, blocked.status_code)
+        with patch(
+            "api.case6b_routes.convert_docx_to_pdf",
+            side_effect=RuntimeError("PDF unavailable"),
+        ):
+            finalized = self.client.post(
+                f"/case6b/session/{session_id}/finalize",
+                json={"version": 1, "allow_unresolved": True},
+            )
+        self.assertEqual(200, finalized.status_code, finalized.text)
+        self.assertTrue(finalized.json()["docx_ready"])
+        self.assertFalse(finalized.json()["pdf_ready"])
+        report = self.client.post(
+            "/pdf/session/report",
+            data={
+                "session_id": session_id,
+                "party": "协议草案",
+                "output_format": "docx",
+            },
+        )
+        self.assertEqual(200, report.status_code)
+        self.assertTrue(report.content.startswith(b"PK"))
+
+    def test_single_material_retry_rejects_unknown_or_nonfailed_target(self):
+        session_id = self._ready_session()
+        session = session_store[session_id][0]
+        session.materials = [
+            validate_material(
+                (SAMPLES / "UC6B_6_Heads of Terms.pdf").read_bytes(),
+                "UC6B_6_Heads of Terms.pdf",
+            )
+        ]
+        unknown = self.client.post(
+            f"/case6b/session/{session_id}/retry?material_id=missing"
+        )
+        self.assertEqual(404, unknown.status_code)
+        not_failed = self.client.post(
+            f"/case6b/session/{session_id}/retry"
+            f"?material_id={session.materials[0].material_id}"
+        )
+        self.assertEqual(400, not_failed.status_code)
+        self.assertEqual(
+            "MATERIAL_NOT_FAILED",
+            not_failed.json()["detail"]["code"],
+        )
 
 
 if __name__ == "__main__":

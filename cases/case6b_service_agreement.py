@@ -112,6 +112,8 @@ def _open_docx(content: bytes) -> Document:
         raise ValueError("模板不是有效的 DOCX 文件")
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            if sum(item.file_size for item in archive.infolist()) > 100 * 1024 * 1024:
+                raise ValueError("DOCX 模板解压后体积过大")
             names = set(archive.namelist())
             if "word/document.xml" not in names:
                 raise ValueError("模板不是有效的 DOCX 文件")
@@ -238,6 +240,8 @@ def extract_template_manifest(content: bytes) -> dict[str, Any]:
                         )
     if not fields:
         raise ValueError("DOCX 模板中没有可识别的连续下划线占位符")
+    if len(fields) > 200:
+        raise ValueError("DOCX 模板最多支持 200 个下划线占位符")
     return {"template_language": "en", "fields": fields}
 
 
@@ -272,6 +276,12 @@ def _validate_image(content: bytes) -> None:
 
 
 def _workbook_info(content: bytes) -> tuple[int, int]:
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            if sum(item.file_size for item in archive.infolist()) > 100 * 1024 * 1024:
+                raise ValueError("XLSX 解压后体积过大")
+    except zipfile.BadZipFile as exc:
+        raise ValueError("XLSX 文件已损坏或无法读取") from exc
     try:
         from openpyxl import load_workbook
     except ImportError as exc:
@@ -354,6 +364,13 @@ def image_to_pdf(content: bytes) -> bytes:
         return document.tobytes(deflate=True)
     finally:
         document.close()
+
+
+def ocr_submission_filename(filename: str, file_type: str) -> str:
+    """PaddleOCR validates the uploaded filename in addition to its MIME type."""
+    if file_type == "image":
+        return f"{Path(filename).stem}.pdf"
+    return filename
 
 
 def _format_cell(value: Any) -> str:
@@ -664,6 +681,8 @@ def apply_review_changes(
         if manifest_by_id[field_id].get("group_key") == "services":
             raise ValueError("服务字段必须通过 service_rows 成对更新")
         value = str(update.get("value", "")).strip()
+        if value == str(fields_by_id[field_id].get("value", "")).strip():
+            continue
         fields_by_id[field_id].setdefault("original", deepcopy(fields_by_id[field_id]))
         fields_by_id[field_id]["status"] = (
             "USER_CONFIRMED" if value else "NEEDS_CONFIRMATION"
@@ -692,6 +711,23 @@ def apply_review_changes(
             status = "USER_CONFIRMED"
         else:
             raise ValueError("保留服务行时必须同时填写服务名称和价格")
+        current_values = {
+            definition["field_kind"]: fields_by_id[definition["field_id"]]
+            for definition in definitions
+        }
+        current_action = (
+            "remove"
+            if all(item.get("status") == "REMOVE" for item in current_values.values())
+            else "keep"
+        )
+        if (
+            action == current_action
+            and name
+            == str(current_values["repeatable_service"].get("value", "")).strip()
+            and price
+            == str(current_values["repeatable_price"].get("value", "")).strip()
+        ):
+            continue
         for definition in definitions:
             target = fields_by_id[definition["field_id"]]
             target.setdefault("original", deepcopy(target))
@@ -752,7 +788,8 @@ def review_payload(session: Case6BSession) -> dict[str, Any]:
 def convert_docx_to_pdf(docx_bytes: bytes, filename: str) -> bytes:
     with tempfile.TemporaryDirectory(prefix="ebram_case6b_") as temp_dir:
         directory = Path(temp_dir)
-        source = directory / filename
+        safe_name = Path(filename).name or "service-agreement.docx"
+        source = directory / safe_name
         source.write_bytes(docx_bytes)
         candidates = [
             shutil.which("soffice"),
@@ -975,7 +1012,10 @@ async def _summarize_material(material: MaterialRecord) -> list[dict[str, Any]]:
             if material.file_type == "image"
             else material.content
         )
-        pages = await _ocr_pdf(pdf, material.filename)
+        pages = await _ocr_pdf(
+            pdf,
+            ocr_submission_filename(material.filename, material.file_type),
+        )
         units = [(f"page:{index}", text) for index, text in enumerate(pages, 1)]
     conversation_id = await _create_conversation(
         auth_headers(), f"case6b-{material.material_id}"
@@ -1041,6 +1081,12 @@ def _validate_agent_fields(
                 item["evidence"] = []
             if item["status"] == "FILLED" and not item.get("evidence"):
                 raise ValueError("Agent 已填字段缺少证据来源")
+            if item["status"] == "FILLED" and not str(item.get("value", "")).strip():
+                raise ValueError("Agent 已填字段缺少字段值")
+            if item["status"] in {"NEEDS_CONFIRMATION", "REMOVE", "LEAVE_BLANK"}:
+                item["value"] = ""
+                if item["status"] != "NEEDS_CONFIRMATION":
+                    item["evidence"] = []
     return values
 
 
@@ -1113,6 +1159,9 @@ async def _run_agent_l(session: Case6BSession) -> None:
 
 
 class Case6BDraftingHandler(CaseHandler):
+    def __init__(self, retry_material_ids: set[str] | None = None):
+        self.retry_material_ids = retry_material_ids
+
     async def analyze(
         self,
         session_id: str,
@@ -1129,6 +1178,11 @@ class Case6BDraftingHandler(CaseHandler):
             total = len(session.materials)
             for index, material in enumerate(session.materials, 1):
                 if material.status == "complete":
+                    continue
+                if (
+                    self.retry_material_ids is not None
+                    and material.material_id not in self.retry_material_ids
+                ):
                     continue
                 material.status = "extracting"
                 material.error = None
