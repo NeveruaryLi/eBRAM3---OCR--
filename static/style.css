@@ -1152,6 +1152,10 @@ html, body {
   margin-top: 0.25rem;
   transition: gap 0.15s;
 }
+
+.sel-card-6b:hover { border-color: rgba(93,111,145,.55); }
+.sel-badge-6b { background: rgba(93,111,145,.14); color: #8295ba; }
+.sel-icon-6b { background: rgba(93,111,145,.11); color: #8295ba; }
 .sel-card:hover .sel-card-enter { gap: 0.6rem; }
 
 .sel-footer {
