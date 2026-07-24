@@ -43,6 +43,10 @@ class Case6AFrontendContractTests(unittest.TestCase):
         self.assertIn('@app.get("/case6a")', app)
         self.assertIn("case6a_router", app)
 
+    def test_chat_surface_has_no_decorative_side_rails(self):
+        css = (ROOT / "static" / "case6a.css").read_text(encoding="utf-8")
+        self.assertNotIn(".c6-main::before", css)
+
 
 if __name__ == "__main__":
     unittest.main()

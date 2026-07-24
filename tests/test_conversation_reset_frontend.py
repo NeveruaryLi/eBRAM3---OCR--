@@ -45,6 +45,18 @@ class ConversationResetFrontendTests(unittest.TestCase):
         self.assertIn(".reset-chat-btn", styles)
         self.assertIn(".reset-chat-btn:disabled", styles)
 
+    def test_all_history_pages_use_shared_three_dot_delete_menu(self):
+        common = (ROOT / "static" / "common.js").read_text(encoding="utf-8")
+        self.assertIn("createHistoryMenu", common)
+        self.assertIn("history-menu-btn", common)
+        self.assertIn("history-dropdown-item danger", common)
+        for case_name in ("case1", "case2", "case5", "case6a", "case6b"):
+            with self.subTest(case=case_name):
+                script = (ROOT / "static" / f"{case_name}.js").read_text(
+                    encoding="utf-8"
+                )
+                self.assertIn("createHistoryMenu", script)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,5 @@
 import io
+import base64
 import json
 import unittest
 import zipfile
@@ -50,10 +51,9 @@ class Case6BCoreTests(unittest.TestCase):
             "t000_r000_c001_p003_f01",
             manifest["fields"][-1]["field_id"],
         )
-        self.assertEqual("service_agreement_v1", manifest["profile_id"])
-        self.assertTrue(manifest["template_confirmed"])
-        self.assertEqual("30", manifest["template_defaults"]["termination_notice"])
-        self.assertEqual("10", manifest["template_defaults"]["materials_return"])
+        self.assertNotIn("profile_id", manifest)
+        self.assertNotIn("template_defaults", manifest)
+        self.assertNotIn("allowed_rewrites", manifest)
 
     def test_bracket_placeholders_are_detected_for_unknown_templates(self):
         output = io.BytesIO()
@@ -64,11 +64,10 @@ class Case6BCoreTests(unittest.TestCase):
         template = validate_template(output.getvalue(), "brackets.docx")
         manifest = extract_template_manifest(template.content)
         self.assertEqual(2, len(manifest["fields"]))
-        self.assertFalse(manifest["template_confirmed"])
         self.assertEqual("bracket", manifest["fields"][0]["placeholder_type"])
         preflight = build_template_preflight(manifest)
-        self.assertEqual("detected", preflight["recognition_mode"])
         self.assertEqual(2, preflight["field_count"])
+        self.assertTrue(preflight["analysis_ready"])
 
     def test_rejects_docx_without_placeholders(self):
         output = io.BytesIO()
@@ -160,8 +159,28 @@ class Case6BCoreTests(unittest.TestCase):
             {"template_language": "en", "fields": manifest["fields"]},
             {"sources": []},
         )
-        self.assertIn("[CASE6B_PHASE:TEMPLATE_PARSE]", json.dumps(first))
-        self.assertIn("[CASE6B_PHASE:FIELD_FILL]", json.dumps(second))
+        first_content = first["messages"][0]["content"]
+        second_content = second["messages"][0]["content"]
+        self.assertEqual(["document"], [item["type"] for item in first_content])
+        self.assertEqual(["document"], [item["type"] for item in second_content])
+        self.assertEqual(
+            ["docx", "md"],
+            [item["format"] for item in first_content[0]["document"]],
+        )
+        self.assertEqual(
+            ["md"],
+            [item["format"] for item in second_content[0]["document"]],
+        )
+        template_context = base64.b64decode(
+            first_content[0]["document"][1]["base64_content"]
+        ).decode("utf-8")
+        fill_context = base64.b64decode(
+            second_content[0]["document"][0]["base64_content"]
+        ).decode("utf-8")
+        self.assertIn("[CASE6B_PHASE:TEMPLATE_PARSE]", template_context)
+        self.assertIn("[CASE6B_PHASE:FIELD_FILL]", fill_context)
+        self.assertIn("## Detected fields", template_context)
+        self.assertIn("## Evidence summary", fill_context)
         self.assertTrue(first["conversation_config"]["short_term_memory"])
         self.assertTrue(second["conversation_config"]["short_term_memory"])
 
@@ -668,14 +687,6 @@ class Case6BRouteTests(unittest.TestCase):
     def test_upload_sample_returns_session_and_37_fields(self):
         response = self.client.post(
             "/case6b/session/upload",
-            data={
-                "form_entries": json.dumps(
-                    {
-                        "contact_name": "Alex Chan",
-                        "requested_term": "12 months",
-                    }
-                )
-            },
             files=[
                 (
                     "template_file",
@@ -698,16 +709,12 @@ class Case6BRouteTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(37, payload["placeholder_count"])
         self.assertEqual(1, len(payload["materials"]))
-        self.assertEqual("service_agreement_v1", payload["template"]["profile_id"])
-        self.assertTrue(payload["template"]["confirmed"])
-        self.assertIn("defaults", payload["template"])
+        self.assertTrue(payload["template"]["analysis_ready"])
+        self.assertNotIn("profile_id", payload["template"])
+        self.assertNotIn("defaults", payload["template"])
         self.assertEqual("case6b", session_metadata[payload["session_id"]]["case_type"])
-        self.assertEqual(
-            "12 months",
-            session_store[payload["session_id"]][0].form_entries["requested_term"],
-        )
 
-    def test_unknown_template_requires_preflight_confirmation(self):
+    def test_unknown_template_preflight_is_read_only_and_automatic(self):
         template_stream = io.BytesIO()
         document = Document()
         document.add_paragraph("Agreement between [Provider_Name] and [Client_Name].")
@@ -738,15 +745,26 @@ class Case6BRouteTests(unittest.TestCase):
         )
         self.assertEqual(200, response.status_code, response.text)
         session_id = response.json()["session_id"]
-        self.assertFalse(response.json()["template"]["confirmed"])
+        self.assertTrue(response.json()["template"]["analysis_ready"])
         detail = self.client.get(f"/case6b/session/{session_id}/template")
         self.assertEqual(200, detail.status_code)
-        confirmed = self.client.patch(
+        mutation = self.client.patch(
             f"/case6b/session/{session_id}/template",
             json={"version": 1, "confirmed": True},
         )
-        self.assertEqual(200, confirmed.status_code, confirmed.text)
-        self.assertTrue(confirmed.json()["confirmed"])
+        self.assertEqual(405, mutation.status_code)
+
+    def test_case6b_delete_is_idempotent_and_clears_shared_stores(self):
+        session_id = self._ready_session()
+
+        response = self.client.delete(f"/case6b/session/{session_id}")
+        repeated = self.client.delete(f"/case6b/session/{session_id}")
+
+        self.assertEqual(204, response.status_code)
+        self.assertEqual(204, repeated.status_code)
+        self.assertNotIn(session_id, session_store)
+        self.assertNotIn(session_id, session_results_store)
+        self.assertNotIn(session_id, session_metadata)
 
     def test_review_unknown_session_returns_410(self):
         response = self.client.get("/case6b/session/missing/review")

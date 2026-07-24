@@ -89,6 +89,35 @@ class Case6AAgentContractTests(unittest.TestCase):
         self.assertEqual(old_marker, "reply-old")
         self.assertEqual((new_marker, new_text), ("reply-new", "New answer"))
 
+    def test_latest_assistant_is_selected_by_time_not_array_order(self):
+        detail = {
+            "conversation_content": [
+                {
+                    "role": "ASSISTANT",
+                    "message_id": "reply-new",
+                    "create_time": 200,
+                    "content": [
+                        {
+                            "branch_content": [
+                                {"type": "text", "text": "Second-round answer"}
+                            ]
+                        }
+                    ],
+                },
+                {
+                    "role": "assistant",
+                    "message_id": "reply-old",
+                    "create_time": 100,
+                    "content": [{"type": "text", "text": "First-round answer"}],
+                },
+            ]
+        }
+
+        marker, text = extract_latest_assistant_message(detail)
+
+        self.assertEqual(marker, "reply-new")
+        self.assertEqual(text, "Second-round answer")
+
     def test_create_session_hides_gptbots_conversation_id(self):
         with patch("api.case6a_routes.AGENT_K_API_KEY", "test-key"), patch(
             "api.case6a_routes._create_gptbots_conversation",
@@ -205,6 +234,63 @@ class Case6AAgentContractTests(unittest.TestCase):
 
         self.assertEqual(error.exception.status_code, 503)
         self.assertEqual(error.exception.detail["code"], "AGENT_UNAVAILABLE")
+
+    def test_empty_blocking_response_polls_for_new_reply_without_resending(self):
+        get_calls = 0
+        post_calls = 0
+
+        def transport(request: httpx.Request) -> httpx.Response:
+            nonlocal get_calls, post_calls
+            if request.method == "POST":
+                post_calls += 1
+                return httpx.Response(200, json={"output": []}, request=request)
+            get_calls += 1
+            if get_calls < 4:
+                payload = {
+                    "conversation_content": [
+                        {
+                            "role": "assistant",
+                            "message_id": "reply-old",
+                            "create_time": 100,
+                            "content": [{"type": "text", "text": "First answer"}],
+                        }
+                    ]
+                }
+            else:
+                payload = {
+                    "conversation_content": [
+                        {
+                            "role": "assistant",
+                            "message_id": "reply-new",
+                            "create_time": 200,
+                            "content": [
+                                {"type": "text", "text": "Delayed second answer"}
+                            ],
+                        },
+                        {
+                            "role": "assistant",
+                            "message_id": "reply-old",
+                            "create_time": 100,
+                            "content": [{"type": "text", "text": "First answer"}],
+                        },
+                    ]
+                }
+            return httpx.Response(200, json=payload, request=request)
+
+        real_client = httpx.AsyncClient
+        with patch(
+            "api.case6a_routes.httpx.AsyncClient",
+            side_effect=lambda **_: real_client(
+                transport=httpx.MockTransport(transport)
+            ),
+        ), patch("api.case6a_routes.asyncio.sleep", new=AsyncMock()):
+            answer = asyncio.run(
+                _send_agent_k_message("conv-private", "Second question")
+            )
+
+        self.assertEqual(answer, "Delayed second answer")
+        self.assertEqual(post_calls, 1)
+        self.assertEqual(get_calls, 4)
 
 
 if __name__ == "__main__":
