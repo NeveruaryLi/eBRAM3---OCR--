@@ -19,22 +19,7 @@
 }
 
 .c6-layout { background: var(--bg); }
-.c6-main { isolation: isolate; }
-
-.c6-main::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 50%;
-  width: min(800px, calc(100% - 40px));
-  transform: translateX(-50%);
-  z-index: -1;
-  pointer-events: none;
-  opacity: 0.34;
-  border-left: 1px solid var(--border);
-  border-right: 1px solid var(--border);
-}
+.c6-main { isolation: isolate; background: var(--bg); }
 
 .c6-sidebar-note {
   margin-top: auto;

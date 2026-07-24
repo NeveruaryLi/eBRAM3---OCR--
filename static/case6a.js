@@ -210,17 +210,13 @@ function renderHistory() {
     const title = document.createElement('span');
     title.className = 'history-title';
     title.textContent = session.title;
-    const remove = document.createElement('button');
-    remove.className = 'history-menu-btn';
-    remove.type = 'button';
-    remove.title = '删除对话';
-    remove.setAttribute('aria-label', `删除对话：${session.title}`);
-    remove.textContent = '×';
-    remove.addEventListener('click', event => {
-      event.stopPropagation();
-      removeSession(session.id);
+    title.title = session.title;
+    const menu = createHistoryMenu({
+      label: session.title,
+      isDisabled: () => busy,
+      onDelete: () => removeSession(session.id),
     });
-    item.append(title, remove);
+    item.append(title, menu);
     item.addEventListener('click', () => switchSession(session.id));
     historyList.appendChild(item);
   }
@@ -228,15 +224,23 @@ function renderHistory() {
 
 async function removeSession(id) {
   const session = sessions.find(item => item.id === id);
-  if (session && session.backendSessionId) {
-    fetch(`/case6a/session/${encodeURIComponent(session.backendSessionId)}`, { method: 'DELETE' }).catch(() => {});
-  }
   sessions = sessions.filter(item => item.id !== id);
   if (currentSessionId === id) {
     currentSessionId = sessions[0]?.id || createLocalSession().id;
   }
   saveSessions();
   renderCurrentSession();
+  if (session && session.backendSessionId) {
+    try {
+      const response = await fetch(
+        `/case6a/session/${encodeURIComponent(session.backendSessionId)}`,
+        { method: 'DELETE' },
+      );
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch {
+      toast('对话已从本地删除；服务端缓存将在两小时内自动清理');
+    }
+  }
 }
 
 function switchSession(id) {

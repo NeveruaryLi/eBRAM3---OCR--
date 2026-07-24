@@ -28,10 +28,11 @@ const els = {
   downloadPdf: $('downloadPdfBtn'), reset: $('resetTaskBtn'), newTask: $('newTaskBtn'),
   history: $('historyList'), sidebar: $('sidebar'), sidebarToggle: $('sidebarToggle'),
   sidebarOverlay: $('sidebarOverlay'), mobileTheme: $('mobileThemeBtn'),
-  formEntries: $('formEntriesInput'), templatePreflight: $('templatePreflight'),
+  templatePreflight: $('templatePreflight'),
   templatePreflightSummary: $('templatePreflightSummary'),
   templatePreflightDetails: $('templatePreflightDetails'),
-  templateConfirm: $('templateConfirmBtn'), conflictPanel: $('conflictPanel'),
+  templateActions: $('templateActions'), replaceTemplate: $('replaceTemplateBtn'),
+  removeTemplate: $('removeTemplateBtn'), conflictPanel: $('conflictPanel'),
   conflictList: $('conflictList'),
 };
 
@@ -55,7 +56,16 @@ function setBusy(value) {
     if (button) button.disabled = value;
   });
   document.querySelectorAll('.c6b-retry-one').forEach(button => { button.disabled = value; });
+  syncUploadControls();
   updateStartButton();
+}
+function syncUploadControls() {
+  document.querySelectorAll('.c6b-file-remove').forEach(button => {
+    button.disabled = state.busy || Boolean(state.sessionId);
+  });
+  [els.templateInput, els.materialsInput, els.replaceTemplate, els.removeTemplate].forEach(control => {
+    if (control) control.disabled = state.busy || Boolean(state.sessionId);
+  });
 }
 function updateStartButton() { els.start.disabled = state.busy || !state.template || state.materials.length < 1; }
 
@@ -78,16 +88,52 @@ function renderHistory() {
     const empty = document.createElement('div'); empty.className = 'history-empty'; empty.textContent = '尚无草案记录'; els.history.appendChild(empty); return;
   }
   state.history.forEach(item => {
-    const node = document.createElement('button');
-    node.type = 'button'; node.className = `history-item${item.id === state.currentLocalId ? ' active' : ''}`;
-    node.textContent = item.title || '新建草案';
-    node.addEventListener('click', () => switchHistory(item));
+    const node = document.createElement('div');
+    node.className = `history-item${item.id === state.currentLocalId ? ' active' : ''}`;
+    const title = document.createElement('button');
+    title.type = 'button';
+    title.className = 'history-title history-title-button';
+    title.textContent = item.title || '新建草案';
+    title.title = title.textContent;
+    title.addEventListener('click', () => switchHistory(item));
+    const menu = createHistoryMenu({
+      label: title.textContent,
+      isDisabled: () => state.busy,
+      onDelete: () => deleteHistory(item.id),
+    });
+    node.append(title, menu);
     els.history.appendChild(node);
   });
+}
+async function deleteHistory(id) {
+  const item = state.history.find(entry => entry.id === id);
+  if (!item || state.busy) return;
+  state.history = state.history.filter(entry => entry.id !== id);
+  const wasCurrent = state.currentLocalId === id;
+  if (wasCurrent) {
+    const next = state.history[0] || null;
+    state.currentLocalId = next?.id || null;
+    clearView(false);
+    if (next) await switchHistory(next);
+    else ensureHistory();
+  }
+  saveHistory();
+  renderHistory();
+  if (item.sessionId) {
+    try {
+      const response = await fetch(`/case6b/session/${encodeURIComponent(item.sessionId)}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch {
+      toast('草案已从本地删除；服务端缓存将在两小时内自动清理');
+    }
+  }
 }
 async function switchHistory(item) {
   if (state.busy) return;
   clearView(false); state.currentLocalId = item.id; state.sessionId = item.sessionId || null; renderHistory();
+  syncUploadControls();
   if (state.sessionId) {
     try { state.review = await requestJson(`/case6b/session/${encodeURIComponent(state.sessionId)}/review`); renderReview(); }
     catch (error) { item.expired = true; saveHistory(); showError(error.message); }
@@ -96,25 +142,70 @@ async function switchHistory(item) {
 }
 
 function setTemplate(file) {
-  if (!file) return;
+  if (!file || state.busy || state.sessionId) return;
   if (!file.name.toLowerCase().endsWith('.docx')) { toast('模板仅支持 DOCX'); return; }
-  state.template = file; els.templateState.textContent = file.name; renderSelectedFiles(); updateStartButton();
+  state.template = file;
+  els.templateState.textContent = file.name;
+  els.templateActions.hidden = false;
+  renderSelectedFiles();
+  updateStartButton();
 }
-function setMaterials(files) {
+function removeTemplate() {
+  if (state.busy || state.sessionId) return;
+  state.template = null;
+  els.templateInput.value = '';
+  els.templateState.textContent = '未选择';
+  els.templateActions.hidden = true;
+  renderSelectedFiles();
+  updateStartButton();
+}
+function fileIdentity(file) {
+  return `${file.name.toLowerCase()}|${file.size}|${file.lastModified || 0}`;
+}
+function addMaterials(files) {
+  if (state.busy || state.sessionId) return;
   const accepted = ['pdf', 'png', 'jpg', 'jpeg', 'jfif', 'xlsx', 'docx', 'csv'];
   const values = [...files].filter(file => accepted.includes(file.name.split('.').pop().toLowerCase()));
-  if (values.length > 20) { toast('最多选择 20 份事实材料'); return; }
-  state.materials = values; els.materialsState.textContent = `${values.length} 份`; renderSelectedFiles(); updateStartButton();
+  const known = new Set(state.materials.map(fileIdentity));
+  const additions = values.filter(file => !known.has(fileIdentity(file)));
+  if (state.materials.length + additions.length > 20) { toast('最多选择 20 份事实材料'); return; }
+  state.materials.push(...additions);
+  if (values.length !== additions.length) toast('已忽略重复选择的材料');
+  els.materialsInput.value = '';
+  els.materialsState.textContent = state.materials.length ? `${state.materials.length} 份` : '未选择';
+  renderSelectedFiles();
+  updateStartButton();
+}
+function removeMaterial(index) {
+  if (state.busy || state.sessionId) return;
+  state.materials.splice(index, 1);
+  els.materialsState.textContent = state.materials.length ? `${state.materials.length} 份` : '未选择';
+  renderSelectedFiles();
+  updateStartButton();
 }
 function renderSelectedFiles() {
   els.selectedFiles.innerHTML = '';
-  const entries = state.template ? [state.template, ...state.materials] : state.materials;
-  entries.forEach((file, index) => {
+  const entries = [
+    ...(state.template ? [{ file: state.template, kind: 'template', index: -1 }] : []),
+    ...state.materials.map((file, index) => ({ file, kind: 'material', index })),
+  ];
+  entries.forEach(({ file, kind: entryKind, index }) => {
     const row = document.createElement('div'); row.className = 'c6b-selected-file';
     const kind = document.createElement('b'); kind.textContent = file.name.split('.').pop().toUpperCase();
     const name = document.createElement('span'); name.textContent = file.name;
+    name.title = file.name;
     const size = document.createElement('small'); size.textContent = fileSize(file.size);
-    row.append(kind, name, size); els.selectedFiles.appendChild(row);
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'c6b-file-remove';
+    remove.setAttribute('aria-label', `移除文件：${file.name}`);
+    remove.textContent = '移除';
+    remove.disabled = state.busy || Boolean(state.sessionId);
+    remove.addEventListener('click', () => {
+      if (entryKind === 'template') removeTemplate();
+      else removeMaterial(index);
+    });
+    row.append(kind, name, size, remove); els.selectedFiles.appendChild(row);
   });
 }
 function bindDropzone(zone, input, onFiles) {
@@ -207,20 +298,18 @@ async function runAnalysis(url, options) {
 function renderTemplatePreflight(preflight) {
   state.templatePreflight = preflight;
   els.templatePreflight.hidden = false;
-  const mode = preflight.recognition_mode === 'profile' ? `已匹配模板档案：${preflight.profile_name || preflight.profile_id}` : '检测到未知常规模板';
-  els.templatePreflightSummary.textContent = `${mode}；共 ${preflight.field_count} 个字段。${preflight.confirmed ? '映射已确认。' : '请确认字段、重复区块与签署区后继续。'}`;
+  els.templatePreflightSummary.textContent = `已自动识别 ${preflight.field_count} 个可稳定回填的占位字段。Agent L 将结合上下文解释字段含义，无需选择模板档案。`;
   els.templatePreflightDetails.innerHTML = '';
   const details = [
     ['占位字段', `${preflight.field_count} 个`],
     ['重复区块', `${(preflight.repeat_blocks || []).length} 个`],
     ['签署字段', `${(preflight.signature_sections || []).length} 个`],
-    ['模板默认值', Object.keys(preflight.defaults || {}).length ? Object.entries(preflight.defaults).map(([key, value]) => `${key}: ${value}`).join('；') : '无'],
+    ['识别方式', '下划线 / 方括号 · 自动定位'],
   ];
   details.forEach(([label, value]) => {
     const item = document.createElement('div'); const strong = document.createElement('strong'); const span = document.createElement('span');
     strong.textContent = label; span.textContent = value; item.append(strong, span); els.templatePreflightDetails.appendChild(item);
   });
-  els.templateConfirm.hidden = preflight.confirmed;
 }
 async function continueAnalysis() {
   const analyze = new FormData(); analyze.append('session_id', state.sessionId);
@@ -233,36 +322,10 @@ async function startWorkflow() {
   try {
     const body = new FormData(); body.append('template_file', state.template, state.template.name);
     state.materials.forEach(file => body.append('material_files', file, file.name));
-    if (els.formEntries.value.trim()) {
-      JSON.parse(els.formEntries.value);
-      body.append('form_entries', els.formEntries.value.trim());
-    }
     const uploaded = await requestJson('/case6b/session/upload', { method: 'POST', body });
     state.sessionId = uploaded.session_id; renderMaterialStatus(uploaded.materials);
     updateHistory({ title: uploaded.template.filename, sessionId: state.sessionId });
     renderTemplatePreflight(uploaded.template);
-    if (uploaded.template.confirmed) await continueAnalysis();
-    else {
-      els.progress.hidden = true; els.status.textContent = '等待模板确认';
-    }
-  } catch (error) { showError(error.message); } finally { setBusy(false); }
-}
-async function confirmTemplate() {
-  if (!state.sessionId || !state.templatePreflight || state.busy) return;
-  setBusy(true);
-  try {
-    state.templatePreflight = await requestJson(`/case6b/session/${encodeURIComponent(state.sessionId)}/template`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        version: state.templatePreflight.version,
-        confirmed: true,
-        field_updates: [],
-        repeat_blocks: state.templatePreflight.repeat_blocks || [],
-        signature_sections: state.templatePreflight.signature_sections || [],
-        allowed_rewrites: state.templatePreflight.allowed_rewrites || [],
-      }),
-    });
-    renderTemplatePreflight(state.templatePreflight);
     await continueAnalysis();
   } catch (error) { showError(error.message); } finally { setBusy(false); }
 }
@@ -412,25 +475,39 @@ async function download(format) {
 async function resetCurrent(confirmFirst = true) {
   if (state.busy) return;
   if (confirmFirst && (state.sessionId || state.template || state.materials.length) && !window.confirm('确定清空当前草案任务吗？')) return;
-  if (state.sessionId) fetch(`/pdf/session/${encodeURIComponent(state.sessionId)}`, { method: 'DELETE' }).catch(() => {});
+  const backendSessionId = state.sessionId;
   clearView(true);
+  if (backendSessionId) {
+    try {
+      const response = await fetch(
+        `/case6b/session/${encodeURIComponent(backendSessionId)}`,
+        { method: 'DELETE' },
+      );
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch {
+      toast('当前草案已重置；服务端缓存将在两小时内自动清理');
+    }
+  }
 }
 function clearView(updateCurrent) {
   state.template = null; state.materials = []; state.sessionId = null; state.review = null; state.templatePreflight = null;
   els.templateInput.value = ''; els.materialsInput.value = ''; els.templateState.textContent = '未选择'; els.materialsState.textContent = '未选择';
+  els.templateActions.hidden = true;
   els.selectedFiles.innerHTML = ''; els.materialStatus.innerHTML = ''; els.idle.hidden = false; els.progress.hidden = true; els.error.hidden = true;
   els.reviewPanel.hidden = true; els.downloadPanel.hidden = true; els.retry.hidden = true; els.status.textContent = '等待文件'; setStage('upload'); updateStartButton();
-  els.templatePreflight.hidden = true; els.conflictPanel.hidden = true; els.formEntries.value = '';
+  els.templatePreflight.hidden = true; els.conflictPanel.hidden = true;
   if (updateCurrent && currentHistory()) updateHistory({ title: '新建草案', sessionId: null, expired: false });
+  syncUploadControls();
 }
 function newTask() { if (state.busy) return; state.currentLocalId = null; ensureHistory(); clearView(false); closeSidebar(); }
 function closeSidebar() { els.sidebar.classList.remove('open'); els.sidebarOverlay.classList.remove('open'); }
 
 bindDropzone(els.templateDropzone, els.templateInput, files => setTemplate(files[0]));
-bindDropzone(els.materialsDropzone, els.materialsInput, files => setMaterials(files));
+bindDropzone(els.materialsDropzone, els.materialsInput, files => addMaterials(files));
+els.removeTemplate.addEventListener('click', removeTemplate);
+els.replaceTemplate.addEventListener('click', () => els.templateInput.click());
 els.start.addEventListener('click', startWorkflow); els.retry.addEventListener('click', () => retryFailed());
 els.saveReview.addEventListener('click', saveReview); els.finalize.addEventListener('click', finalizeDraft);
-els.templateConfirm.addEventListener('click', confirmTemplate);
 els.downloadDocx.addEventListener('click', () => download('docx')); els.downloadPdf.addEventListener('click', () => download('pdf'));
 els.reset.addEventListener('click', () => resetCurrent(true)); els.newTask.addEventListener('click', newTask);
 els.sidebarToggle.addEventListener('click', () => { els.sidebar.classList.add('open'); els.sidebarOverlay.classList.add('open'); });

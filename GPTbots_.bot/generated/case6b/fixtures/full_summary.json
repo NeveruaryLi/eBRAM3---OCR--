@@ -1,95 +1,305 @@
 {
-  "summary_version": "case6b-poc-r1",
+  "summary_version": "case6b-poc-r2",
   "language": "en",
   "sources": [
     {
       "filename": "UC6B_1_email_01_initial_inquiry.png",
       "source_type": "email",
       "facts": [
-        "ClientCo Limited, CR No. 3234567.",
-        "Client address: Unit 1905, 19/F, Silver Tower, 88 Gloucester Road, Wanchai, Hong Kong.",
-        "Approximately 85 Windows/macOS users; the message was an initial inquiry with no commitment."
+        {
+          "semantic_key": "client_legal_name",
+          "raw_value": "ClientCo Limited",
+          "normalized_value": "ClientCo Limited",
+          "category": "party",
+          "currency": null,
+          "unit": null,
+          "source": "UC6B_1_email_01_initial_inquiry.png",
+          "locator": "page:1"
+        },
+        {
+          "semantic_key": "client_cr_number",
+          "raw_value": "CR No. 3234567",
+          "normalized_value": "3234567",
+          "category": "party",
+          "currency": null,
+          "unit": null,
+          "source": "UC6B_1_email_01_initial_inquiry.png",
+          "locator": "page:1"
+        },
+        {
+          "semantic_key": "client_address",
+          "raw_value": "Unit 1905, 19/F, Silver Tower, 88 Gloucester Road, Wanchai, Hong Kong",
+          "normalized_value": "Unit 1905, 19/F, Silver Tower, 88 Gloucester Road, Wanchai, Hong Kong",
+          "category": "party",
+          "currency": null,
+          "unit": null,
+          "source": "UC6B_1_email_01_initial_inquiry.png",
+          "locator": "page:1"
+        }
       ]
     },
     {
       "filename": "UC6B_2_email_02_offer.png",
       "source_type": "formal_email",
       "facts": [
-        "ServiceStar Solutions Limited, CR No. 2897654.",
-        "Service provider address: 21/F, Prosperity Tower, 39 Queen's Road Central, Hong Kong.",
-        "Offer scope: 8x5 remote helpdesk, endpoint patching, Microsoft 365 tenant administration, monthly KPI reporting.",
-        "Term: 12 months commencing upon contract execution.",
-        "Price: HKD 68,000 per month, invoiced monthly in arrears, Net 30 days.",
-        "SLA: P1 response 2 hours, P2 4 hours, P3 next business day; remote only."
+        {
+          "semantic_key": "provider_legal_name",
+          "raw_value": "ServiceStar Solutions Limited",
+          "normalized_value": "ServiceStar Solutions Limited",
+          "category": "party",
+          "currency": null,
+          "unit": null,
+          "source": "UC6B_2_email_02_offer.png",
+          "locator": "page:1"
+        },
+        {
+          "semantic_key": "provider_cr_number",
+          "raw_value": "CR No. 2897654",
+          "normalized_value": "2897654",
+          "category": "party",
+          "currency": null,
+          "unit": null,
+          "source": "UC6B_2_email_02_offer.png",
+          "locator": "page:1"
+        },
+        {
+          "semantic_key": "provider_address",
+          "raw_value": "21/F, Prosperity Tower, 39 Queen's Road Central, Hong Kong",
+          "normalized_value": "21/F, Prosperity Tower, 39 Queen's Road Central, Hong Kong",
+          "category": "party",
+          "currency": null,
+          "unit": null,
+          "source": "UC6B_2_email_02_offer.png",
+          "locator": "page:1"
+        },
+        {
+          "semantic_key": "agreement_term",
+          "raw_value": "12 months commencing upon contract execution",
+          "normalized_value": "12 months commencing upon contract execution",
+          "category": "term",
+          "currency": null,
+          "unit": "months",
+          "source": "UC6B_2_email_02_offer.png",
+          "locator": "page:1"
+        },
+        {
+          "semantic_key": "monthly_service_fee",
+          "raw_value": "HKD 68,000 per month",
+          "normalized_value": "68000",
+          "category": "payment",
+          "currency": "HKD",
+          "unit": "per month",
+          "source": "UC6B_2_email_02_offer.png",
+          "locator": "page:1"
+        },
+        {
+          "semantic_key": "invoice_payment_days",
+          "raw_value": "Net 30 days",
+          "normalized_value": "30",
+          "category": "payment",
+          "currency": null,
+          "unit": "days",
+          "source": "UC6B_2_email_02_offer.png",
+          "locator": "page:1"
+        }
       ]
     },
     {
       "filename": "UC6B_3_email_03_acceptance_in_principle.png",
       "source_type": "formal_email",
       "facts": [
-        "ClientCo accepted the stated scope, SLA, term and pricing in principle on 14 Jan 2026.",
-        "Legal relations are intended only upon signing the formal MSA and SOW.",
-        "The email requested editable Word drafts for legal review."
+        {
+          "semantic_key": "acceptance_status",
+          "raw_value": "Accepted in principle, subject to signing the formal MSA and SOW",
+          "normalized_value": "subject to contract",
+          "category": "other",
+          "currency": null,
+          "unit": null,
+          "source": "UC6B_3_email_03_acceptance_in_principle.png",
+          "locator": "page:1"
+        }
       ]
     },
     {
       "filename": "UC6B_4_Milestones, Dates & Consideration Schedule.xlsx",
       "source_type": "structured_schedule",
       "facts": [
-        "Kickoff target: 20 Jan 2026; onboarding completion target: 05 Feb 2026.",
-        "Contract signing and onboarding completion each have HKD 0 consideration.",
-        "Each completed service month triggers HKD 68,000.",
-        "Monthly report plus invoice is the monthly acceptance evidence.",
-        "The schedule does not state an amount payable at contract signing or at final completion."
+        {
+          "semantic_key": "contract_signing_payment",
+          "raw_value": "HKD 0 at contract signing",
+          "normalized_value": "0",
+          "category": "payment",
+          "currency": "HKD",
+          "unit": "at contract signing",
+          "source": "UC6B_4_Milestones, Dates & Consideration Schedule.xlsx",
+          "locator": "Milestones!D2"
+        },
+        {
+          "semantic_key": "onboarding_completion_payment",
+          "raw_value": "HKD 0 upon onboarding completion",
+          "normalized_value": "0",
+          "category": "payment",
+          "currency": "HKD",
+          "unit": "upon onboarding completion",
+          "source": "UC6B_4_Milestones, Dates & Consideration Schedule.xlsx",
+          "locator": "Milestones!D3"
+        },
+        {
+          "semantic_key": "monthly_service_payment",
+          "raw_value": "HKD 68,000 for each completed service month",
+          "normalized_value": "68000",
+          "category": "payment",
+          "currency": "HKD",
+          "unit": "per completed service month",
+          "source": "UC6B_4_Milestones, Dates & Consideration Schedule.xlsx",
+          "locator": "Milestones!D4"
+        }
       ]
     },
     {
       "filename": "UC6B_5_Scope, Service Components & Pricing Breakdown.xlsx",
       "source_type": "structured_pricing",
       "facts": [
-        "Included: Remote Helpdesk (8x5), monthly value HKD 20,000.",
-        "Included: Endpoint Patching, monthly value HKD 16,000.",
-        "Included: M365 Tenant Admin, monthly value HKD 22,000.",
-        "Included: Monthly Reporting, monthly value HKD 10,000.",
-        "Optional On-site Support is HKD 900 per hour with a minimum of 2 hours and is excluded from the monthly total.",
-        "Optional one-off Asset Inventory is HKD 8,000 per run and is excluded from the monthly total.",
-        "The four included monthly values total HKD 68,000."
+        {
+          "semantic_key": "included_service_1",
+          "raw_value": "Remote Helpdesk (8x5)",
+          "normalized_value": "Remote Helpdesk (8x5)",
+          "category": "service",
+          "currency": "HKD",
+          "unit": "per month",
+          "amount": "20000",
+          "source": "UC6B_5_Scope, Service Components & Pricing Breakdown.xlsx",
+          "locator": "Pricing!A2:C2"
+        },
+        {
+          "semantic_key": "included_service_2",
+          "raw_value": "Endpoint Patching",
+          "normalized_value": "Endpoint Patching",
+          "category": "service",
+          "currency": "HKD",
+          "unit": "per month",
+          "amount": "16000",
+          "source": "UC6B_5_Scope, Service Components & Pricing Breakdown.xlsx",
+          "locator": "Pricing!A3:C3"
+        },
+        {
+          "semantic_key": "included_service_3",
+          "raw_value": "M365 Tenant Admin",
+          "normalized_value": "M365 Tenant Admin",
+          "category": "service",
+          "currency": "HKD",
+          "unit": "per month",
+          "amount": "22000",
+          "source": "UC6B_5_Scope, Service Components & Pricing Breakdown.xlsx",
+          "locator": "Pricing!A4:C4"
+        },
+        {
+          "semantic_key": "included_service_4",
+          "raw_value": "Monthly Reporting",
+          "normalized_value": "Monthly Reporting",
+          "category": "service",
+          "currency": "HKD",
+          "unit": "per month",
+          "amount": "10000",
+          "source": "UC6B_5_Scope, Service Components & Pricing Breakdown.xlsx",
+          "locator": "Pricing!A5:C5"
+        },
+        {
+          "semantic_key": "optional_service_1",
+          "raw_value": "On-site Support",
+          "normalized_value": "On-site Support",
+          "category": "service",
+          "currency": "HKD",
+          "unit": "per hour, minimum 2 hours",
+          "amount": "900",
+          "source": "UC6B_5_Scope, Service Components & Pricing Breakdown.xlsx",
+          "locator": "Pricing!A6:C6"
+        },
+        {
+          "semantic_key": "optional_service_2",
+          "raw_value": "Asset Inventory",
+          "normalized_value": "Asset Inventory",
+          "category": "service",
+          "currency": "HKD",
+          "unit": "per run",
+          "amount": "8000",
+          "source": "UC6B_5_Scope, Service Components & Pricing Breakdown.xlsx",
+          "locator": "Pricing!A7:C7"
+        }
       ]
     },
     {
       "filename": "UC6B_6_Heads of Terms.pdf",
       "source_type": "heads_of_terms",
       "facts": [
-        "Parties: ClientCo Limited and ServiceStar Solutions Limited.",
-        "Scope, 12-month term, HKD 68,000 monthly fee, monthly arrears and Net 30 terms are confirmed subject to contract.",
-        "No binding obligations arise until contract signature.",
-        "No effective date, exact agreement end date, termination notice period or return-of-materials period is supplied."
+        {
+          "semantic_key": "agreement_term",
+          "raw_value": "12 months commencing upon contract execution",
+          "normalized_value": "12 months commencing upon contract execution",
+          "category": "term",
+          "currency": null,
+          "unit": "months",
+          "source": "UC6B_6_Heads of Terms.pdf",
+          "locator": "page:1"
+        },
+        {
+          "semantic_key": "invoice_payment_days",
+          "raw_value": "Net 30 days",
+          "normalized_value": "30",
+          "category": "payment",
+          "currency": null,
+          "unit": "days",
+          "source": "UC6B_6_Heads of Terms.pdf",
+          "locator": "page:1"
+        }
       ]
     },
     {
       "filename": "UC6B_7_Meeting Minutes.pdf",
       "source_type": "meeting_minutes",
       "facts": [
-        "The parties agreed to draft an MSA and SOW; acceptance becomes binding only on signing.",
-        "HKD 68,000 per month, Net 30, invoiced monthly in arrears was confirmed subject to contract.",
-        "Target service start is February 2026 after onboarding.",
-        "The minutes do not establish an effective date, exact agreement end date, termination notice period or return-of-materials period."
+        {
+          "semantic_key": "monthly_service_fee",
+          "raw_value": "HKD 68,000 per month, invoiced monthly in arrears",
+          "normalized_value": "68000",
+          "category": "payment",
+          "currency": "HKD",
+          "unit": "per month",
+          "source": "UC6B_7_Meeting Minutes.pdf",
+          "locator": "page:1"
+        }
       ]
     },
     {
       "filename": "UC6B_8_Scanned_note.png",
       "source_type": "informal_note",
       "facts": [
-        "Phone-call note records intent to proceed to contract subject to legal review.",
-        "It repeats HKD 68,000 per month, remote-only scope, Net 30, monthly invoicing in arrears."
+        {
+          "semantic_key": "scope_delivery_mode",
+          "raw_value": "Remote-only scope",
+          "normalized_value": "remote only",
+          "category": "service",
+          "currency": null,
+          "unit": null,
+          "source": "UC6B_8_Scanned_note.png",
+          "locator": "page:1"
+        }
       ]
     },
     {
       "filename": "UC6B_9_Teams_chatlog.jfif",
       "source_type": "chat",
       "facts": [
-        "Chat repeats HKD 68,000 per month and SLA P1 2h, P2 4h, P3 next business day.",
-        "ClientCo says acceptance was sent in principle and requests a draft MSA."
+        {
+          "semantic_key": "service_level_targets",
+          "raw_value": "P1 2h, P2 4h, P3 next business day",
+          "normalized_value": "P1 2 hours; P2 4 hours; P3 next business day",
+          "category": "service",
+          "currency": null,
+          "unit": null,
+          "source": "UC6B_9_Teams_chatlog.jfif",
+          "locator": "page:1"
+        }
       ]
     }
   ],
@@ -98,6 +308,6 @@
     "All material remains subject to contract until signature.",
     "Do not use optional services as included services.",
     "Do not calculate an exact end date without an effective date.",
-    "Do not invent signing payments, completion payments, notice periods or return periods."
+    "Do not invent notice periods or return periods."
   ]
 }

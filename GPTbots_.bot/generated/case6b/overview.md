@@ -16,16 +16,20 @@ flowchart LR
 
 ## Runtime contract
 
-- First message: `[CASE6B_PHASE:TEMPLATE_PARSE]`, placeholder locator manifest and one DOCX.
-- Second message in the same conversation: `[CASE6B_PHASE:FIELD_FILL]`, explicit `field_list`
-  and explicit `full_summary`.
+- First message: a short text guide, the original DOCX, and `case6b_template_context.md`;
+  the Markdown contains `[CASE6B_PHASE:TEMPLATE_PARSE]`, every detected field and its
+  stable locator.
+- Second message in the same conversation: `case6b_field_fill_context.md`; the Markdown contains
+  `[CASE6B_PHASE:FIELD_FILL]`, the complete `field_list` and evidence `full_summary`. A short
+  text guide identifies the attachment and expected JSON-only response.
 - Both LLM components return one JSON object.
 - Long-term memory, user properties, tools, workflows and databases are disabled.
 - Short-term memory is auxiliary only; critical state is always supplied explicitly.
 - Agent L never edits the DOCX. The application validates JSON and performs deterministic
-  document replacement, template-default labeling and conflict gating.
-- The customer profile supplies four included, two optional and four preserved blank service
-  rows. Relative durations such as `12 months` are accepted without inventing an end date.
+  document replacement and conflict gating.
+- Production runs do not attach a customer-specific template profile or hidden default values.
+  Missing evidence remains visible for review. Relative durations such as `12 months` are
+  accepted without inventing an end date.
 
 ## POC fixtures
 
@@ -39,12 +43,16 @@ local `.env`; it never writes the key or GPTBots conversation identifiers to rep
 
 ## Test-mode result
 
-- Published version: `v1.0.5`
-- V1.1 test release: 2026-07-24
-- Supports application manifests containing underscore/bracket placeholders, template
-  profiles, optional service rows, execution blanks and evidence-vs-default provenance.
-- Two-stage POC: passed on 2026-07-24
+- Current test-mode release: `v1.0.9`
+- Runtime payload: generic Markdown attachment contract plus concise text guidance
+- Supports application manifests containing underscore/bracket placeholders, optional service
+  rows, execution blanks and evidence provenance.
+- Two-stage POC: passed on 2026-07-24 with 37/37 template fields and 37/37 fill results;
+  both LogTree stages reported `SUCCESS`
+- API response selection prefers the current turn's persisted Assistant message over
+  blocking-response node/debug text.
 - Live route: first turn (`0 < 1`) → `AI Model-1`; second turn (`1 < 1` is false)
   → `AI Model-2`
 - Evaluation history: `evaluation-v1.0.2.md`, `evaluation-v1.0.3.md`,
-  `evaluation-v1.0.4.md`, `evaluation-v1.0.5.md`
+  `evaluation-v1.0.4.md`, `evaluation-v1.0.5.md`, `evaluation-v1.0.8.md`,
+  `evaluation-v1.0.9.md`

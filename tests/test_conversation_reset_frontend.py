@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -32,6 +33,10 @@ class ConversationResetFrontendTests(unittest.TestCase):
                 self.assertIn("/pdf/session/", script)
                 self.assertIn("session.messages = []", script)
                 self.assertIn("session.title = '新对话'", script)
+                self.assertIn("const backendSessionId = session.backendSessionId || null;", script)
+                self.assertIn("const backendSessionId = target?.backendSessionId || null;", script)
+                self.assertNotIn("id === currentSessionId ? multiSessionId", script)
+                self.assertNotIn("id === currentSessionId ? scrapeSessionId", script)
                 self.assertNotIn("resetConversationBtn.addEventListener('click', createNewSession)", script)
 
         case6a = (ROOT / "static" / "case6a.js").read_text(encoding="utf-8")
@@ -50,12 +55,44 @@ class ConversationResetFrontendTests(unittest.TestCase):
         self.assertIn("createHistoryMenu", common)
         self.assertIn("history-menu-btn", common)
         self.assertIn("history-dropdown-item danger", common)
+        self.assertIn("activeHistoryMenuButton", common)
+        self.assertIn("closeHistoryMenus({ restoreFocus: true })", common)
         for case_name in ("case1", "case2", "case5", "case6a", "case6b"):
             with self.subTest(case=case_name):
                 script = (ROOT / "static" / f"{case_name}.js").read_text(
                     encoding="utf-8"
                 )
                 self.assertIn("createHistoryMenu", script)
+
+    def test_case1_case2_case5_history_switches_are_state_isolated(self):
+        backend_state = {
+            "case1": "multiSessionId",
+            "case2": "multiSessionId",
+            "case5": "scrapeSessionId",
+        }
+        for case_name, state_name in backend_state.items():
+            with self.subTest(case=case_name):
+                script = (ROOT / "static" / f"{case_name}.js").read_text(
+                    encoding="utf-8"
+                )
+                match = re.search(
+                    r"function switchToSession\(id\) \{(?P<body>.*?)\n\}",
+                    script,
+                    re.S,
+                )
+                self.assertIsNotNone(match)
+                body = match.group("body")
+                self.assertIn("if (busy) return;", body)
+                self.assertIn("if (id === currentSessionId) return;", body)
+                self.assertIn(
+                    f"{state_name} = session.backendSessionId || null;",
+                    body,
+                )
+                self.assertIn(
+                    "resetCurrentView({ preserveHistory: true });",
+                    body,
+                )
+                self.assertNotIn("setBusy(false);", body)
 
 
 if __name__ == "__main__":

@@ -1,10 +1,11 @@
+import asyncio
 import io
 import base64
 import json
 import unittest
 import zipfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import fitz
 from docx import Document
@@ -15,6 +16,9 @@ from app import app
 from cases.case6b_service_agreement import (
     Case6BSession,
     MaterialRecord,
+    _merge_manifest,
+    _send_message,
+    _validate_agent_fields,
     _apply_profile_evidence_enrichment,
     apply_review_changes,
     build_template_preflight,
@@ -68,6 +72,248 @@ class Case6BCoreTests(unittest.TestCase):
         preflight = build_template_preflight(manifest)
         self.assertEqual(2, preflight["field_count"])
         self.assertTrue(preflight["analysis_ready"])
+
+    def test_chinese_table_service_rows_and_signature_are_classified(self):
+        output = io.BytesIO()
+        document = Document()
+        document.add_paragraph("服務協議：本文件用於記錄雙方服務範圍、價格及正式簽署資料。")
+        table = document.add_table(rows=2, cols=2)
+        table.cell(0, 0).text = "服務項目"
+        table.cell(0, 1).text = "服務價格及計費方式"
+        table.cell(1, 0).text = "________________"
+        table.cell(1, 1).text = "________________"
+        document.add_paragraph("簽署人姓名：________________")
+        document.save(output)
+
+        template = validate_template(output.getvalue(), "chinese.docx")
+        manifest = extract_template_manifest(template.content)
+
+        self.assertEqual("zh_tw", template.language)
+        self.assertEqual("zh_tw", manifest["template_language"])
+        self.assertEqual(
+            ["signature_name", "repeatable_service", "repeatable_price"],
+            [field["field_kind"] for field in manifest["fields"]],
+        )
+        self.assertEqual(
+            [None, 1, 1],
+            [field["group_index"] for field in manifest["fields"]],
+        )
+
+    def test_agent_can_promote_unknown_scalar_to_signature_field(self):
+        output = io.BytesIO()
+        document = Document()
+        document.add_paragraph("Contact [Contact_Name]")
+        document.save(output)
+        manifest = extract_template_manifest(output.getvalue())
+        parsed = {
+            "template_language": "en",
+            "fields": [
+                {
+                    "field_id": manifest["fields"][0]["field_id"],
+                    "semantic_key": "signatory_name",
+                    "label": "Signatory name",
+                    "field_kind": "signature_name",
+                    "group_key": None,
+                    "group_index": None,
+                    "required": False,
+                    "resolution_policy": "leave_blank",
+                }
+            ],
+        }
+
+        merged = _merge_manifest(manifest, parsed)
+
+        self.assertEqual("signature_name", merged["fields"][0]["field_kind"])
+        self.assertEqual(
+            manifest["fields"][0]["locator"],
+            merged["fields"][0]["locator"],
+        )
+
+    def test_party_company_name_is_not_locked_as_personal_signature(self):
+        output = io.BytesIO()
+        document = Document()
+        document.add_paragraph("Client Name: [Client_Name]")
+        document.save(output)
+        manifest = extract_template_manifest(output.getvalue())
+        self.assertEqual("scalar", manifest["fields"][0]["field_kind"])
+        parsed = {
+            "template_language": "en",
+            "fields": [
+                {
+                    "field_id": manifest["fields"][0]["field_id"],
+                    "semantic_key": "client_identity",
+                    "label": "Client company name",
+                    "field_kind": "scalar",
+                    "group_key": None,
+                    "group_index": None,
+                    "required": True,
+                    "resolution_policy": "fill",
+                }
+            ],
+        }
+        merged = _merge_manifest(manifest, parsed)
+        filled = _validate_agent_fields(
+            merged,
+            {
+                "fields": [
+                    {
+                        "field_id": manifest["fields"][0]["field_id"],
+                        "status": "FILLED",
+                        "value": "Acme Limited",
+                        "evidence": [
+                            {
+                                "source": "company.pdf",
+                                "fact": "Client: Acme Limited",
+                            }
+                        ],
+                    }
+                ]
+            },
+            filled=True,
+        )
+        self.assertEqual("FILLED", filled[0]["status"])
+        self.assertEqual("Acme Limited", filled[0]["value"])
+
+    def test_filled_repeatable_fields_require_service_action(self):
+        manifest = {
+            "fields": [
+                {
+                    "field_id": "p001_f01",
+                    "field_kind": "repeatable_service",
+                }
+            ]
+        }
+        parsed = {
+            "fields": [
+                {
+                    "field_id": "p001_f01",
+                    "status": "FILLED",
+                    "value": "Support",
+                    "evidence": [{"source": "pricing.xlsx", "fact": "Support"}],
+                }
+            ]
+        }
+
+        with self.assertRaisesRegex(ValueError, "service_action"):
+            _validate_agent_fields(manifest, parsed, filled=True)
+
+    def test_repeatable_service_action_matrix_rejects_invalid_values(self):
+        manifest = {
+            "fields": [
+                {
+                    "field_id": "p001_f01",
+                    "field_kind": "repeatable_service",
+                }
+            ]
+        }
+        for status, action in (
+            ("NEEDS_CONFIRMATION", "garbage"),
+            ("REMOVE", "optional"),
+            ("KEEP_BLANK", "included"),
+            ("LEAVE_BLANK", "blank"),
+        ):
+            with self.subTest(status=status, action=action):
+                with self.assertRaisesRegex(ValueError, "service_action"):
+                    _validate_agent_fields(
+                        manifest,
+                        {
+                            "fields": [
+                                {
+                                    "field_id": "p001_f01",
+                                    "status": status,
+                                    "value": "",
+                                    "evidence": [],
+                                    "service_action": action,
+                                }
+                            ]
+                        },
+                        filled=True,
+                    )
+
+    def test_repeatable_name_and_price_require_the_same_service_action(self):
+        manifest = {
+            "fields": [
+                {
+                    "field_id": "p001_f01",
+                    "field_kind": "repeatable_service",
+                    "group_index": 1,
+                },
+                {
+                    "field_id": "p001_f02",
+                    "field_kind": "repeatable_price",
+                    "group_index": 1,
+                },
+            ]
+        }
+        parsed = {
+            "fields": [
+                {
+                    "field_id": "p001_f01",
+                    "status": "FILLED",
+                    "value": "Support",
+                    "evidence": [{"source": "scope.xlsx", "fact": "Support"}],
+                    "service_action": "included",
+                },
+                {
+                    "field_id": "p001_f02",
+                    "status": "FILLED",
+                    "value": "HKD 1,000 per month",
+                    "evidence": [
+                        {"source": "scope.xlsx", "fact": "HKD 1,000 per month"}
+                    ],
+                    "service_action": "optional",
+                },
+            ]
+        }
+        with self.assertRaisesRegex(ValueError, "名称与价格状态不一致"):
+            _validate_agent_fields(manifest, parsed, filled=True)
+
+    def test_rejects_service_group_with_more_than_name_price_pair(self):
+        local_manifest = {
+            "template_language": "en",
+            "fields": [
+                {
+                    "field_id": "p001_f01",
+                    "field_kind": "scalar",
+                    "locator": "paragraph:1/blank:1",
+                },
+                {
+                    "field_id": "p001_f02",
+                    "field_kind": "scalar",
+                    "locator": "paragraph:1/blank:2",
+                },
+                {
+                    "field_id": "p001_f03",
+                    "field_kind": "scalar",
+                    "locator": "paragraph:1/blank:3",
+                },
+            ],
+        }
+        parsed = {
+            "template_language": "en",
+            "fields": [
+                {
+                    "field_id": "p001_f01",
+                    "field_kind": "repeatable_service",
+                    "group_key": "services",
+                    "group_index": 1,
+                },
+                {
+                    "field_id": "p001_f02",
+                    "field_kind": "repeatable_service",
+                    "group_key": "services",
+                    "group_index": 1,
+                },
+                {
+                    "field_id": "p001_f03",
+                    "field_kind": "repeatable_price",
+                    "group_key": "services",
+                    "group_index": 1,
+                },
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "名称与价格字段"):
+            _merge_manifest(local_manifest, parsed)
 
     def test_rejects_docx_without_placeholders(self):
         output = io.BytesIO()
@@ -161,21 +407,27 @@ class Case6BCoreTests(unittest.TestCase):
         )
         first_content = first["messages"][0]["content"]
         second_content = second["messages"][0]["content"]
-        self.assertEqual(["document"], [item["type"] for item in first_content])
-        self.assertEqual(["document"], [item["type"] for item in second_content])
+        self.assertEqual(["text", "document"], [item["type"] for item in first_content])
+        self.assertEqual(["text", "document"], [item["type"] for item in second_content])
+        self.assertIn("original DOCX agreement template", first_content[0]["text"])
+        self.assertIn("case6b_template_context.md", first_content[0]["text"])
+        self.assertIn("return exactly one JSON Object", first_content[0]["text"])
+        self.assertIn("case6b_field_fill_context.md", second_content[0]["text"])
+        self.assertIn("complete field list", second_content[0]["text"])
+        self.assertIn("return exactly one JSON Object", second_content[0]["text"])
         self.assertEqual(
             ["docx", "md"],
-            [item["format"] for item in first_content[0]["document"]],
+            [item["format"] for item in first_content[1]["document"]],
         )
         self.assertEqual(
             ["md"],
-            [item["format"] for item in second_content[0]["document"]],
+            [item["format"] for item in second_content[1]["document"]],
         )
         template_context = base64.b64decode(
-            first_content[0]["document"][1]["base64_content"]
+            first_content[1]["document"][1]["base64_content"]
         ).decode("utf-8")
         fill_context = base64.b64decode(
-            second_content[0]["document"][0]["base64_content"]
+            second_content[1]["document"][0]["base64_content"]
         ).decode("utf-8")
         self.assertIn("[CASE6B_PHASE:TEMPLATE_PARSE]", template_context)
         self.assertIn("[CASE6B_PHASE:FIELD_FILL]", fill_context)
@@ -187,6 +439,76 @@ class Case6BCoreTests(unittest.TestCase):
     def test_agent_json_parser_accepts_fenced_object(self):
         parsed = parse_agent_json('```json\n{"fields": [], "conflicts": []}\n```')
         self.assertEqual([], parsed["fields"])
+
+    def test_successful_send_prefers_new_assistant_message_over_blocking_debug_text(self):
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "message": "{'answer': 'attachment debug output'}"
+        }
+        response.raise_for_status.return_value = None
+        client = MagicMock()
+        client.post = AsyncMock(return_value=response)
+        client_context = MagicMock()
+        client_context.__aenter__ = AsyncMock(return_value=client)
+        client_context.__aexit__ = AsyncMock(return_value=False)
+        with (
+            patch(
+                "cases.case6b_service_agreement.httpx.AsyncClient",
+                return_value=client_context,
+            ),
+            patch(
+                "cases.case6b_service_agreement._conversation_detail",
+                new=AsyncMock(
+                    side_effect=[
+                        ("old-message", '{"old":true}'),
+                        ("new-message", '{"fields":[]}'),
+                    ]
+                ),
+            ),
+        ):
+            reply = asyncio.run(
+                _send_message(
+                    {"Authorization": "Bearer test"},
+                    "conversation",
+                    {"messages": []},
+                )
+            )
+        self.assertEqual('{"fields":[]}', reply)
+
+    def test_unknown_message_baseline_never_selects_an_old_assistant_reply(self):
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"answer": '{"fields":[]}'}
+        response.raise_for_status.return_value = None
+        client = MagicMock()
+        client.post = AsyncMock(return_value=response)
+        client_context = MagicMock()
+        client_context.__aenter__ = AsyncMock(return_value=client)
+        client_context.__aexit__ = AsyncMock(return_value=False)
+        with (
+            patch(
+                "cases.case6b_service_agreement.httpx.AsyncClient",
+                return_value=client_context,
+            ),
+            patch(
+                "cases.case6b_service_agreement._conversation_detail",
+                new=AsyncMock(
+                    side_effect=[
+                        (None, ""),
+                        ("old-message", '{"old":true}'),
+                    ]
+                ),
+            ),
+        ):
+            reply = asyncio.run(
+                _send_message(
+                    {"Authorization": "Bearer test"},
+                    "conversation",
+                    {"messages": []},
+                )
+            )
+        self.assertEqual('{"fields":[]}', reply)
 
     def test_review_edit_invalidates_generated_files_and_increments_version(self):
         fields = json.loads((FIXTURES / "expected_fill.json").read_text("utf-8"))[
@@ -244,7 +566,7 @@ class Case6BCoreTests(unittest.TestCase):
         self.assertEqual("FILLED", target["status"])
         self.assertEqual(evidence, target["evidence"])
 
-    def test_docx_fill_preserves_signature_blanks_and_profile_service_rows(self):
+    def test_docx_fill_preserves_signature_blanks_and_removes_unused_service_rows(self):
         fields = json.loads((FIXTURES / "expected_fill.json").read_text("utf-8"))[
             "fields"
         ]
@@ -260,8 +582,8 @@ class Case6BCoreTests(unittest.TestCase):
         text = "\n".join(p.text for p in document.paragraphs)
         self.assertIn("ServiceStar Solutions Limited", text)
         self.assertIn("Optional On-site Support", text)
-        self.assertNotIn("[TO BE CONFIRMED]", text)
-        self.assertEqual(10, text.count("(Price:"))
+        self.assertEqual(4, text.count("[TO BE CONFIRMED]"))
+        self.assertEqual(6, text.count("(Price:"))
         signature_text = "\n".join(
             cell.text for table in document.tables for row in table.rows for cell in row.cells
         )
@@ -463,7 +785,7 @@ class Case6BCoreTests(unittest.TestCase):
         )
         self.assertEqual([], conflicts)
 
-    def test_customer_profile_enriches_fields_from_structured_evidence(self):
+    def test_runtime_does_not_apply_customer_profile_enrichment(self):
         manifest = extract_template_manifest(TEMPLATE.read_bytes())
         fields = [
             {
@@ -554,30 +876,12 @@ class Case6BCoreTests(unittest.TestCase):
 
         _apply_profile_evidence_enrichment(session)
 
-        by_id = {field["field_id"]: field for field in session.fields}
-        self.assertEqual(
-            "ServiceStar Solutions Limited (CR No.: 2897654)",
-            by_id["p002_f02"]["value"],
+        self.assertTrue(all(field["value"] == "" for field in session.fields))
+        self.assertTrue(
+            all("service_action" not in field for field in session.fields)
         )
-        self.assertEqual(
-            "ClientCo Limited (CR No.: 3234567)",
-            by_id["p002_f04"]["value"],
-        )
-        self.assertEqual("HKD 0", by_id["p016_f01"]["value"])
-        self.assertEqual("HKD 0", by_id["p016_f02"]["value"])
-        self.assertEqual("30", by_id["p021_f01"]["value"])
-        self.assertEqual("12 months", by_id["p024_f01"]["value"])
-        self.assertEqual("included", by_id["p006_f01"]["service_action"])
-        self.assertEqual("HKD 20,000 per month", by_id["p006_f02"]["value"])
-        self.assertEqual("optional", by_id["p010_f01"]["service_action"])
-        self.assertEqual(
-            "HKD 900 per hour (minimum 2 hours)",
-            by_id["p010_f02"]["value"],
-        )
-        self.assertEqual("HKD 8,000 per run", by_id["p011_f02"]["value"])
-        self.assertTrue(by_id["p011_f02"]["evidence"])
 
-    def test_customer_profile_renders_gold_structure_and_payment_total(self):
+    def test_generic_renderer_does_not_apply_customer_specific_rewrites(self):
         manifest = extract_template_manifest(TEMPLATE.read_bytes())
         values = {
             "p002_f02": "ServiceStar Solutions Limited (CR No.: 2897654)",
@@ -654,13 +958,12 @@ class Case6BCoreTests(unittest.TestCase):
         self.assertIn("ServiceStar Solutions Limited (CR No.: 2897654)", body)
         self.assertIn("ClientCo Limited (CR No.: 3234567)", body)
         self.assertIn("Optional On-site Support", body)
-        self.assertIn("HKD 68,000 per service month", body)
+        self.assertNotIn("HKD 68,000 per service month", body)
         self.assertIn("12 months", body)
-        self.assertEqual(1, body.count("remain in force for 12 months"))
-        self.assertNotIn("will end on 12 months", body)
+        self.assertIn("will end on 12 months", body)
         self.assertEqual(10, body.count("(Price:"))
-        self.assertIn("ServiceStar Solutions Limited", signatures)
-        self.assertIn("ClientCo Limited", signatures)
+        self.assertNotIn("ServiceStar Solutions Limited", signatures)
+        self.assertNotIn("ClientCo Limited", signatures)
         self.assertIn("Name:_________________________", signatures)
 
 
@@ -765,6 +1068,20 @@ class Case6BRouteTests(unittest.TestCase):
         self.assertNotIn(session_id, session_store)
         self.assertNotIn(session_id, session_results_store)
         self.assertNotIn(session_id, session_metadata)
+
+    def test_case6b_delete_rejects_busy_session(self):
+        session_id = self._ready_session()
+        session = session_store[session_id][0]
+        asyncio.run(session.lock.acquire())
+        try:
+            response = self.client.delete(f"/case6b/session/{session_id}")
+        finally:
+            session.lock.release()
+
+        self.assertEqual(409, response.status_code)
+        self.assertEqual("SESSION_BUSY", response.json()["detail"]["code"])
+        self.assertIn(session_id, session_store)
+        self.assertIn(session_id, session_results_store)
 
     def test_review_unknown_session_returns_410(self):
         response = self.client.get("/case6b/session/missing/review")

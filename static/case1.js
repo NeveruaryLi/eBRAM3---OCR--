@@ -193,16 +193,11 @@ function renderHistoryList() {
     const title = document.createElement('span');
     title.className = 'history-title';
     title.textContent = s.title;
-
-    // 三点菜单按钮：hover 时显示，点击时弹出操作菜单
-    const menuBtn = document.createElement('button');
-    menuBtn.className = 'history-menu-btn';
-    menuBtn.title = '更多操作';
-    menuBtn.setAttribute('aria-label', '更多操作');
-    menuBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg>`;
-    menuBtn.addEventListener('click', e => {
-      e.stopPropagation();   // 防止触发 switchToSession
-      openHistoryDropdown(s.id, menuBtn, item);
+    title.title = s.title;
+    const menuBtn = createHistoryMenu({
+      label: s.title,
+      isDisabled: () => busy,
+      onDelete: () => deleteSession(s.id),
     });
 
     item.appendChild(title);
@@ -222,20 +217,17 @@ function restoreMessage(msg) {
 }
 
 function switchToSession(id) {
+  if (busy) return;
+  if (id === currentSessionId) return;
   const session = sessions.find(s => s.id === id);
   if (!session) return;
 
+  resetCurrentView({ preserveHistory: true });
   currentSessionId = id;
   currentConversationId = session.conversationId || null;
+  multiSessionId = session.backendSessionId || null;
 
-  // 清空消息列表
-  messagesList.innerHTML = '';
   welcome.hidden = session.messages.length > 0;
-  hideProgress();
-  setBusy(false);
-  textInput.value = '';
-  textInput.style.height = 'auto';
-  sendBtn.disabled = true;
 
   // 恢复消息
   for (const msg of session.messages) {
@@ -256,6 +248,11 @@ function generateUUID() {
 
 function getOrCreateMultiSessionId() {
   if (!multiSessionId) multiSessionId = generateUUID();
+  const session = getCurrentSession();
+  if (session) {
+    session.backendSessionId = multiSessionId;
+    saveSessions();
+  }
   return multiSessionId;
 }
 
@@ -648,16 +645,17 @@ async function resetCurrentConversation() {
   const hasContent = (
     session.messages.length > 0
     || fileQueue.length > 0
-    || Boolean(multiSessionId)
+    || Boolean(session.backendSessionId)
     || Object.keys(analysisResults).length > 0
   );
   if (hasContent && !confirm('确定重置当前对话吗？消息、文件和分析结果将被清空。')) return;
 
-  const backendSessionId = multiSessionId;
+  const backendSessionId = session.backendSessionId || null;
   resetCurrentView({ preserveHistory: true });
   session.messages = [];
   session.title = '新对话';
   session.conversationId = null;
+  session.backendSessionId = null;
   session.updatedAt = Date.now();
   saveSessions();
   renderHistoryList();
@@ -727,13 +725,29 @@ function openHistoryDropdown(sessionId, menuBtn, historyItem) {
  * 删除指定历史对话（含 localStorage），若删除的是当前对话则重置视图。
  * @param {string} id - 要删除的 session id
  */
-function deleteSession(id) {
-  if (!confirm('确定删除这条对话记录吗？')) return;
+async function deleteSession(id) {
+  if (busy) return;
+  const target = sessions.find(s => s.id === id);
+  const backendSessionId = target?.backendSessionId || null;
   const wasActive = (id === currentSessionId);
   sessions = sessions.filter(s => s.id !== id);
   saveSessions();
-  if (wasActive) resetCurrentView();
+  if (wasActive) {
+    resetCurrentView();
+    if (sessions.length) switchToSession(sessions[0].id);
+    else createNewSession();
+  }
   renderHistoryList();
+  if (backendSessionId) {
+    try {
+      const response = await fetch(`/pdf/session/${encodeURIComponent(backendSessionId)}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch {
+      toast('对话已从本地删除；服务端缓存将在两小时内自动清理');
+    }
+  }
 }
 
 async function startAnalysis() {

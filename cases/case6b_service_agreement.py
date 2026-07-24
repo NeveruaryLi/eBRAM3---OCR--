@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import csv
+import hashlib
 import io
 import json
 import logging
@@ -54,6 +55,13 @@ MAX_XLSX_SHEETS = 20
 MAX_XLSX_CELLS = 10_000
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 SIGNATURE_KINDS = {"signature_name", "signature", "signature_date"}
+ALLOWED_FIELD_KINDS = {
+    "scalar",
+    "repeatable_service",
+    "repeatable_price",
+    *SIGNATURE_KINDS,
+}
+ALLOWED_SERVICE_ACTIONS = {"included", "optional", "blank", "remove"}
 ALLOWED_AGENT_STATUSES = {
     "FILLED",
     "NEEDS_CONFIRMATION",
@@ -62,13 +70,16 @@ ALLOWED_AGENT_STATUSES = {
     "KEEP_BLANK",
 }
 _BLANK_RE = re.compile(r"_{4,}")
-_BRACKET_RE = re.compile(r"\[([A-Za-z][A-Za-z0-9_ ]{0,80})\]")
+_BRACKET_RE = re.compile(
+    r"\[([A-Za-z\u3400-\u9fff][A-Za-z0-9_\u3400-\u9fff ]{0,80})\]"
+)
 _LOCATOR_RE = re.compile(
     r"^(?:paragraph:(?P<paragraph>\d+)|"
     r"table:(?P<table>\d+)/row:(?P<row>\d+)/cell:(?P<cell>\d+)/paragraph:(?P<cellpara>\d+))"
     r"/(?:blank|placeholder):(?P<blank>\d+)$"
 )
 PROFILE_PATH = Path(__file__).with_name("profiles") / "case6b_service_agreement_v1.json"
+MAX_AGENT_CONTEXT_BYTES = 9_500_000
 
 
 @dataclass
@@ -98,7 +109,6 @@ class Case6BSession:
     field_manifest: dict[str, Any]
     fields: list[dict[str, Any]] = field(default_factory=list)
     conflicts: list[dict[str, Any]] = field(default_factory=list)
-    form_entries: dict[str, Any] = field(default_factory=dict)
     template_version: int = 1
     full_summary: dict[str, Any] | None = None
     review_version: int = 0
@@ -139,25 +149,34 @@ def _open_docx(content: bytes) -> Document:
         raise ValueError("DOCX 模板已损坏或无法读取") from exc
 
 
-def validate_template(content: bytes, filename: str) -> TemplateRecord:
-    if not filename.lower().endswith(".docx"):
-        raise ValueError("模板仅支持 DOCX 格式，请先将 PDF 或 DOC 转换为 DOCX")
-    document = _open_docx(content)
-    text_parts = [paragraph.text for paragraph in document.paragraphs]
-    text_parts.extend(
+def _document_text(document: Document) -> str:
+    parts = [paragraph.text for paragraph in document.paragraphs]
+    parts.extend(
         paragraph.text
         for table in document.tables
         for row in table.rows
         for cell in row.cells
         for paragraph in cell.paragraphs
     )
+    return "\n".join(parts)
+
+
+def _detect_template_language(text: str) -> str:
+    chinese_chars = len(re.findall(r"[\u3400-\u9fff]", text))
+    return "zh_tw" if chinese_chars > max(20, len(text) // 8) else "en"
+
+
+def validate_template(content: bytes, filename: str) -> TemplateRecord:
+    if not filename.lower().endswith(".docx"):
+        raise ValueError("模板仅支持 DOCX 格式，请先将 PDF 或 DOC 转换为 DOCX")
+    document = _open_docx(content)
+    text = _document_text(document)
+    text_parts = text.splitlines()
     if not any(
         _BLANK_RE.search(text) or _BRACKET_RE.search(text) for text in text_parts
     ):
         raise ValueError("DOCX 模板中没有可识别的下划线或方括号占位符")
-    text = "\n".join(text_parts)
-    chinese_chars = len(re.findall(r"[\u3400-\u9fff]", text))
-    language = "zh_tw" if chinese_chars > max(20, len(text) // 8) else "en"
+    language = _detect_template_language(text)
     return TemplateRecord(filename=filename, content=content, language=language)
 
 
@@ -207,12 +226,20 @@ def _field_hint(text: str, blank_index: int, group_index: int | None) -> dict[st
             "required": False,
             "resolution_policy": "remove_if_unused",
         }
-    if "signature" in lowered:
-        kind = "signature"
-    elif ("service provider" in lowered or "client" in lowered) and "name:" in lowered:
-        kind = "signature_name"
-    elif "date:" in lowered:
+    signature_context = any(
+        token in lowered
+        for token in ("signature", "signatory", "簽署", "簽名", "签署", "签名")
+    )
+    name_context = "name" in lowered or any(
+        token in lowered for token in ("姓名", "名稱", "名称")
+    )
+    date_context = "date" in lowered or "日期" in lowered
+    if signature_context and date_context:
         kind = "signature_date"
+    elif signature_context and name_context:
+        kind = "signature_name"
+    elif signature_context:
+        kind = "signature"
     else:
         kind = "scalar"
     return {
@@ -232,7 +259,10 @@ def extract_template_manifest(content: bytes) -> dict[str, Any]:
         matches = _placeholder_matches(paragraph.text)
         if not matches:
             continue
-        is_service = len(matches) == 2 and "price" in paragraph.text.lower()
+        is_service = len(matches) == 2 and any(
+            token in paragraph.text.lower()
+            for token in ("price", "價格", "价格", "價錢", "价钱", "費用", "费用")
+        )
         if is_service:
             service_index += 1
         for blank_index, (match, placeholder_type) in enumerate(matches, 1):
@@ -257,13 +287,36 @@ def extract_template_manifest(content: bytes) -> dict[str, Any]:
                 }
             )
     for table_index, table in enumerate(document.tables):
+        header_text = " ".join(cell.text for cell in table.rows[0].cells) if table.rows else ""
         for row_index, row in enumerate(table.rows):
+            row_match_count = sum(
+                len(_placeholder_matches(paragraph.text))
+                for cell in row.cells
+                for paragraph in cell.paragraphs
+            )
+            service_context = f"{header_text} {' '.join(cell.text for cell in row.cells)}".lower()
+            is_service_row = (
+                row_match_count == 2
+                and any(token in service_context for token in ("service", "服務", "服务"))
+                and any(
+                    token in service_context
+                    for token in ("price", "價格", "价格", "價錢", "价钱", "費用", "费用")
+                )
+            )
+            if is_service_row:
+                service_index += 1
+            row_blank_index = 0
             for cell_index, cell in enumerate(row.cells):
                 for paragraph_index, paragraph in enumerate(cell.paragraphs):
                     for blank_index, (match, placeholder_type) in enumerate(
                         _placeholder_matches(paragraph.text), 1
                     ):
-                        hint = _field_hint(paragraph.text, blank_index, None)
+                        row_blank_index += 1
+                        hint = _field_hint(
+                            paragraph.text,
+                            row_blank_index if is_service_row else blank_index,
+                            service_index if is_service_row else None,
+                        )
                         fields.append(
                             {
                                 "field_id": (
@@ -293,19 +346,9 @@ def extract_template_manifest(content: bytes) -> dict[str, Any]:
         raise ValueError("DOCX 模板中没有可识别的下划线或方括号占位符")
     if len(fields) > 200:
         raise ValueError("DOCX 模板最多支持 200 个下划线占位符")
-    profile = _detect_profile(document, service_index)
-    if profile:
-        semantic_keys = profile.get("field_semantic_keys", {})
-        for item in fields:
-            if item["field_id"] in semantic_keys:
-                item["semantic_key"] = semantic_keys[item["field_id"]]
     return {
-        "template_language": "en",
+        "template_language": _detect_template_language(_document_text(document)),
         "fields": fields,
-        "profile_id": profile["profile_id"] if profile else None,
-        "profile_name": profile["display_name"] if profile else None,
-        "template_confirmed": profile is not None,
-        "recognition_mode": "profile" if profile else "detected",
         "repeat_blocks": [
             {"group_key": "services", "rows": service_index}
         ]
@@ -316,24 +359,18 @@ def extract_template_manifest(content: bytes) -> dict[str, Any]:
             for field in fields
             if field.get("field_kind") in SIGNATURE_KINDS
         ],
-        "allowed_rewrites": profile["allowed_rewrites"] if profile else [],
-        "template_defaults": profile["template_defaults"] if profile else {},
     }
 
 
 def build_template_preflight(manifest: dict[str, Any], version: int = 1) -> dict[str, Any]:
     return {
         "version": version,
-        "profile_id": manifest.get("profile_id"),
-        "profile_name": manifest.get("profile_name"),
-        "recognition_mode": manifest.get("recognition_mode", "detected"),
-        "confirmed": bool(manifest.get("template_confirmed")),
+        "analysis_ready": bool(manifest.get("fields")),
+        "recognition_mode": "automatic",
         "field_count": len(manifest.get("fields", [])),
         "fields": manifest.get("fields", []),
         "repeat_blocks": manifest.get("repeat_blocks", []),
         "signature_sections": manifest.get("signature_sections", []),
-        "allowed_rewrites": manifest.get("allowed_rewrites", []),
-        "defaults": manifest.get("template_defaults", {}),
     }
 
 
@@ -609,10 +646,16 @@ def build_agent_l_template_payload(
     template: TemplateRecord,
     manifest: dict[str, Any],
 ) -> dict[str, Any]:
-    text = (
+    context = build_template_context_markdown(template, manifest)
+    guidance = (
         "[CASE6B_PHASE:TEMPLATE_PARSE]\n"
-        "Parse the attached DOCX using this application-generated placeholder manifest.\n"
-        f"template_placeholders:\n{json.dumps(manifest, ensure_ascii=False)}"
+        f"Attachment 1, {template.filename}, is the original DOCX agreement template. "
+        "Use it only to understand the document layout and surrounding clauses. "
+        "Attachment 2, case6b_template_context.md, contains the application-detected "
+        "placeholders, stable field IDs, locators, and the required output schema. "
+        "Read both attachments together, explain every detected field without adding, "
+        "removing, reordering, or filling any field, and return exactly one JSON Object "
+        "that follows the Markdown contract. Do not return commentary or Markdown fences."
     )
     return {
         "conversation_id": conversation_id,
@@ -621,7 +664,10 @@ def build_agent_l_template_payload(
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": text},
+                    {
+                        "type": "text",
+                        "text": guidance,
+                    },
                     {
                         "type": "document",
                         "document": [
@@ -631,6 +677,13 @@ def build_agent_l_template_payload(
                                 ).decode("ascii"),
                                 "format": "docx",
                                 "name": template.filename,
+                            },
+                            {
+                                "base64_content": base64.b64encode(context).decode(
+                                    "ascii"
+                                ),
+                                "format": "md",
+                                "name": "case6b_template_context.md",
                             }
                         ],
                     },
@@ -649,20 +702,152 @@ def build_agent_l_fill_payload(
     field_list: dict[str, Any],
     full_summary: dict[str, Any],
 ) -> dict[str, Any]:
-    text = (
+    context = build_field_fill_context_markdown(field_list, full_summary)
+    guidance = (
         "[CASE6B_PHASE:FIELD_FILL]\n"
-        f"field_list:\n{json.dumps(field_list, ensure_ascii=False)}\n"
-        f"full_summary:\n{json.dumps(full_summary, ensure_ascii=False)}"
+        "The attachment case6b_field_fill_context.md contains the complete field list "
+        "from the first stage and the evidence summary extracted from all source files. "
+        "Treat the attachment as the sole source of field IDs and factual values. "
+        "Fill every listed field once, preserve evidence references, mark unsupported "
+        "facts with the allowed non-filled status, and return exactly one JSON Object "
+        "that follows the Markdown contract. Do not return commentary or Markdown fences."
     )
     return {
         "conversation_id": conversation_id,
         "response_mode": "blocking",
-        "messages": [{"role": "user", "content": [{"type": "text", "text": text}]}],
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": guidance,
+                    },
+                    {
+                        "type": "document",
+                        "document": [
+                            {
+                                "base64_content": base64.b64encode(context).decode(
+                                    "ascii"
+                                ),
+                                "format": "md",
+                                "name": "case6b_field_fill_context.md",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
         "conversation_config": {
             "short_term_memory": True,
             "long_term_memory": False,
         },
     }
+
+
+def _validated_context_bytes(text: str, *, label: str) -> bytes:
+    encoded = text.encode("utf-8")
+    if not encoded.strip():
+        raise ValueError(f"{label} 不能为空")
+    if len(encoded) > MAX_AGENT_CONTEXT_BYTES:
+        raise ValueError(f"{label} 超过 Agent 文档输入上限")
+    return encoded
+
+
+def build_template_context_markdown(
+    template: TemplateRecord,
+    manifest: dict[str, Any],
+) -> bytes:
+    fields = manifest.get("fields")
+    if not isinstance(fields, list) or not fields:
+        raise ValueError("模板上下文缺少已检测字段")
+    if len(fields) > 200:
+        raise ValueError("模板上下文最多支持 200 个字段")
+    lines = [
+        "[CASE6B_PHASE:TEMPLATE_PARSE]",
+        "",
+        "# Case 6B template context",
+        "",
+        "## Template metadata",
+        "",
+        f"- filename: `{template.filename}`",
+        f"- language_hint: `{manifest.get('template_language', template.language)}`",
+        f"- sha256: `{hashlib.sha256(template.content).hexdigest()}`",
+        f"- detected_field_count: `{len(fields)}`",
+        "",
+        "## Detected fields",
+        "",
+        "The following JSON array is authoritative. Return every `field_id` once,",
+        "in the same order. Do not create, remove, merge or alter locators.",
+        "",
+        "```json",
+        json.dumps(fields, ensure_ascii=False, indent=2),
+        "```",
+        "",
+        "## Detected structure",
+        "",
+        "```json",
+        json.dumps(
+            {
+                "repeat_blocks": manifest.get("repeat_blocks", []),
+                "signature_sections": manifest.get("signature_sections", []),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        "```",
+        "",
+        "## Required output",
+        "",
+        "Return one JSON object with `template_language` and `fields`.",
+        "Each field must contain `field_id`, `semantic_key`, `label`, `field_kind`,",
+        "`group_key`, `group_index`, `required`, and `resolution_policy`.",
+        "Do not include field values or explanatory text.",
+        "",
+    ]
+    return _validated_context_bytes("\n".join(lines), label="模板上下文")
+
+
+def build_field_fill_context_markdown(
+    field_list: dict[str, Any],
+    full_summary: dict[str, Any],
+) -> bytes:
+    fields = field_list.get("fields")
+    if not isinstance(fields, list) or not fields:
+        raise ValueError("字段填充上下文缺少 field_list")
+    if not isinstance(full_summary.get("sources"), list):
+        raise ValueError("字段填充上下文缺少 full_summary.sources")
+    lines = [
+        "[CASE6B_PHASE:FIELD_FILL]",
+        "",
+        "# Case 6B field-fill context",
+        "",
+        "## Field list",
+        "",
+        "This list is authoritative. Return every `field_id` once in this order.",
+        "",
+        "```json",
+        json.dumps(field_list, ensure_ascii=False, indent=2),
+        "```",
+        "",
+        "## Evidence summary",
+        "",
+        "Use only the facts and locations below. Missing evidence must not be",
+        "replaced by assumptions or customer-specific defaults.",
+        "",
+        "```json",
+        json.dumps(full_summary, ensure_ascii=False, indent=2),
+        "```",
+        "",
+        "## Required output",
+        "",
+        "Return one JSON object with `fields` and `conflicts`.",
+        "Allowed statuses: `FILLED`, `NEEDS_CONFIRMATION`, `REMOVE`,",
+        "`LEAVE_BLANK`, and `KEEP_BLANK`.",
+        "Every FILLED field must include evidence with source and locator.",
+        "",
+    ]
+    return _validated_context_bytes("\n".join(lines), label="字段填充上下文")
 
 
 def _paragraph_for_locator(document: Document, locator: str):
@@ -883,6 +1068,13 @@ def render_draft_docx(
             )
     for group_index, group_fields in grouped.items():
         statuses = {item["status"] for item in group_fields}
+        actions = {
+            item.get("service_action")
+            for item in group_fields
+            if item.get("service_action")
+        }
+        if len(actions) > 1:
+            raise ValueError("同一服务行的名称与价格状态不一致")
         if statuses == {"REMOVE"}:
             locator = next(
                 item["locator"]
@@ -904,6 +1096,16 @@ def render_draft_docx(
         if status in {"LEAVE_BLANK", "REMOVE", "KEEP_BLANK"}:
             continue
         replacement = result.get("value", "") if status in {"FILLED", "USER_CONFIRMED"} else marker
+        if (
+            definition.get("field_kind") == "repeatable_service"
+            and result.get("service_action") == "optional"
+            and replacement
+        ):
+            if template_language == "zh_tw":
+                if not re.match(r"^\s*可[選选]", replacement):
+                    replacement = f"可選：{replacement}"
+            elif not re.match(r"^\s*optional\b", replacement, re.I):
+                replacement = f"Optional {replacement}"
         highlight = status == "NEEDS_CONFIRMATION"
         match = _LOCATOR_RE.match(definition["locator"])
         if not match:
@@ -1226,7 +1428,7 @@ async def _conversation_detail(
     client: httpx.AsyncClient,
     headers: dict[str, str],
     conversation_id: str,
-) -> tuple[str, str]:
+) -> tuple[str | None, str]:
     try:
         response = await client.get(
             MESSAGES_URL,
@@ -1234,10 +1436,10 @@ async def _conversation_detail(
             params={"conversation_id": conversation_id, "page": 1, "page_size": 100},
         )
         if response.status_code >= 400:
-            return "", ""
+            return None, ""
         return _latest_assistant_text(response.json())
     except (httpx.HTTPError, ValueError):
-        return "", ""
+        return None, ""
 
 
 async def _send_message(
@@ -1255,24 +1457,25 @@ async def _send_message(
                 marker, recovered = await _conversation_detail(
                     client, headers, conversation_id
                 )
-                if recovered and marker != baseline:
+                if baseline is not None and recovered and marker != baseline:
                     return recovered
                 raise RuntimeError("Agent 请求状态未知，请重试当前材料") from exc
             if response.status_code in RETRYABLE_STATUS:
                 marker, recovered = await _conversation_detail(
                     client, headers, conversation_id
                 )
-                if recovered and marker != baseline:
+                if baseline is not None and recovered and marker != baseline:
                     return recovered
                 if attempt < 2:
                     await asyncio.sleep(2**attempt)
                     continue
             response.raise_for_status()
             answer = extract_gptbots_reply(response.json()).strip()
-            if not answer:
-                _, answer = await _conversation_detail(
-                    client, headers, conversation_id
-                )
+            marker, recovered = await _conversation_detail(
+                client, headers, conversation_id
+            )
+            if baseline is not None and recovered and marker != baseline:
+                answer = recovered
             if not answer:
                 raise RuntimeError("Agent 未返回有效内容")
             return answer
@@ -1629,6 +1832,18 @@ def _validate_agent_fields(
             if item.get("status") not in ALLOWED_AGENT_STATUSES:
                 raise ValueError("Agent 返回了不支持的字段状态")
             definition = manifest_by_id[item["field_id"]]
+            field_kind = definition.get("field_kind")
+            if field_kind in {"repeatable_service", "repeatable_price"}:
+                action = item.get("service_action")
+                expected_actions = {
+                    "FILLED": {"included", "optional"},
+                    "NEEDS_CONFIRMATION": {"included", "optional"},
+                    "REMOVE": {"remove"},
+                    "KEEP_BLANK": {"blank"},
+                    "LEAVE_BLANK": set(),
+                }[item["status"]]
+                if action not in expected_actions:
+                    raise ValueError("Agent 重复服务字段缺少有效 service_action")
             if definition.get("field_kind") in SIGNATURE_KINDS:
                 item["status"] = "LEAVE_BLANK"
                 item["value"] = ""
@@ -1651,6 +1866,21 @@ def _validate_agent_fields(
                 if definition.get("field_kind") in SIGNATURE_KINDS
                 else "evidence"
             )
+        grouped_actions: dict[int, set[str]] = {}
+        for item in values:
+            definition = manifest_by_id[item["field_id"]]
+            if definition.get("field_kind") not in {
+                "repeatable_service",
+                "repeatable_price",
+            }:
+                continue
+            group_index = definition.get("group_index")
+            if isinstance(group_index, int):
+                grouped_actions.setdefault(group_index, set()).add(
+                    str(item.get("service_action", ""))
+                )
+        if any(len(actions) > 1 for actions in grouped_actions.values()):
+            raise ValueError("同一服务行的名称与价格状态不一致")
     return values
 
 
@@ -1663,20 +1893,60 @@ def _merge_manifest(
     merged = []
     for field in fields:
         local = local_by_id[field["field_id"]]
+        agent_kind = field.get("field_kind")
+        if agent_kind not in ALLOWED_FIELD_KINDS:
+            raise ValueError("Agent 返回了不支持的字段类型")
+        if local.get("field_kind") in SIGNATURE_KINDS | {
+            "repeatable_service",
+            "repeatable_price",
+        }:
+            agent_kind = local["field_kind"]
         combined = {**local, **field}
         for key in (
             "locator",
             "placeholder_type",
             "placeholder_text",
-            "field_kind",
-            "group_key",
-            "group_index",
         ):
             if key in local:
                 combined[key] = local[key]
+        combined["field_kind"] = agent_kind
+        if agent_kind in {"repeatable_service", "repeatable_price"}:
+            group_index = (
+                local.get("group_index")
+                if local.get("field_kind") in {
+                    "repeatable_service",
+                    "repeatable_price",
+                }
+                else field.get("group_index")
+            )
+            if field.get("group_key") != "services" or not isinstance(
+                group_index, int
+            ) or group_index < 1:
+                raise ValueError("Agent 返回的重复服务分组无效")
+            combined["group_key"] = "services"
+            combined["group_index"] = group_index
+        else:
+            combined["group_key"] = None
+            combined["group_index"] = None
+        if agent_kind in SIGNATURE_KINDS:
+            combined["required"] = False
+            combined["resolution_policy"] = "leave_blank"
         if local.get("semantic_key"):
             combined["semantic_key"] = local["semantic_key"]
         merged.append(combined)
+    service_groups: dict[int, list[str]] = {}
+    for field in merged:
+        if field["field_kind"] in {"repeatable_service", "repeatable_price"}:
+            service_groups.setdefault(int(field["group_index"]), []).append(
+                field["field_kind"]
+            )
+    if any(
+        len(kinds) != 2
+        or kinds.count("repeatable_service") != 1
+        or kinds.count("repeatable_price") != 1
+        for kinds in service_groups.values()
+    ):
+        raise ValueError("Agent 返回的重复服务行必须包含名称与价格字段")
     return {
         **{key: value for key, value in local_manifest.items() if key != "fields"},
         "template_language": parsed.get("template_language") or "en",
@@ -2044,21 +2314,9 @@ async def _run_agent_l(session: Case6BSession) -> None:
                     {
                         "template_language": merged_manifest["template_language"],
                         "fields": merged_manifest["fields"],
-                        "profile_id": merged_manifest.get("profile_id"),
-                        "template_defaults": merged_manifest.get(
-                            "template_defaults", {}
-                        ),
                         "repeat_blocks": merged_manifest.get("repeat_blocks", []),
-                        "allowed_rewrites": merged_manifest.get(
-                            "allowed_rewrites", []
-                        ),
-                        "service_row_policy": (
-                            _load_service_agreement_profile().get(
-                                "service_row_policy", {}
-                            )
-                            if merged_manifest.get("profile_id")
-                            == "service_agreement_v1"
-                            else {}
+                        "signature_sections": merged_manifest.get(
+                            "signature_sections", []
                         ),
                     },
                     session.full_summary or {"sources": []},
@@ -2073,8 +2331,8 @@ async def _run_agent_l(session: Case6BSession) -> None:
             agent_conflicts = normalize_agent_conflicts(
                 parsed_fill.get("conflicts")
             )
-            _apply_profile_policies(session)
-            _apply_profile_evidence_enrichment(session)
+            for field in session.fields:
+                field.setdefault("source_type", "evidence")
             existing = {
                 conflict.get("conflict_id") or json.dumps(conflict, sort_keys=True)
                 for conflict in session.conflicts
@@ -2108,8 +2366,6 @@ class Case6BDraftingHandler(CaseHandler):
         if not values or not isinstance(values[0], Case6BSession):
             raise ValueError("Case 6B 会话不存在或已过期")
         session = values[0]
-        if not session.field_manifest.get("template_confirmed"):
-            raise ValueError("模板预检尚未确认，请先确认字段与重复区块")
         if session.lock.locked():
             raise ValueError("当前草案正在处理中，请稍候")
         async with session.lock:
@@ -2186,7 +2442,6 @@ class Case6BDraftingHandler(CaseHandler):
                     }
                     for material in session.materials
                 ],
-                "form_entries": session.form_entries,
                 "conflicts": [],
             }
             session.conflicts = detect_fact_conflicts(session.full_summary["sources"])

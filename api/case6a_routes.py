@@ -45,6 +45,7 @@ class Case6ASession:
     conversation_id: str
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
+    tainted: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
 
@@ -107,29 +108,76 @@ def extract_assistant_text(payload: dict[str, Any]) -> str:
 
 
 def extract_latest_assistant_message(payload: dict[str, Any]) -> tuple[str, str]:
-    """返回最后一条 Assistant 文本及稳定标识，供故障恢复排除旧回复。"""
+    """按消息时间返回最新 Assistant 文本，不依赖 API 数组顺序。"""
+    messages = _assistant_messages(payload)
+    if not messages:
+        return "", ""
+    marker, text, _ = max(messages, key=lambda item: item[2])
+    return marker, text
+
+
+def _message_time_key(message: dict[str, Any]) -> float:
+    value = message.get("create_time", message.get("createTime"))
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                return 0.0
+    return 0.0
+
+
+def _assistant_messages(
+    payload: dict[str, Any],
+) -> list[tuple[str, str, tuple[int, float, str, int]]]:
+    """提取会话中所有可见 Assistant 文本、稳定标识和排序键。"""
     messages = payload.get("conversation_content", [])
     if not isinstance(messages, list):
-        return "", ""
-    for index in range(len(messages) - 1, -1, -1):
-        message = messages[index]
-        if not isinstance(message, dict) or message.get("role") != "assistant":
+        return []
+    found: list[tuple[str, str, tuple[int, float, str, int]]] = []
+    fallback_counts: dict[str, int] = {}
+    for index, message in enumerate(messages):
+        if (
+            not isinstance(message, dict)
+            or str(message.get("role", "")).casefold() != "assistant"
+        ):
             continue
         texts: list[str] = []
         _collect_text_blocks(message.get("content", []), texts)
-        if texts:
-            text = "\n".join(dict.fromkeys(texts))
-            marker_value = (
-                message.get("message_id")
-                or message.get("messageId")
-                or message.get("create_time")
-                or message.get("createTime")
+        if not texts:
+            continue
+        text = "\n".join(dict.fromkeys(texts))
+        time_key = _message_time_key(message)
+        has_time = int(
+            message.get("create_time") is not None
+            or message.get("createTime") is not None
+        )
+        marker_value = message.get("message_id") or message.get("messageId")
+        if marker_value is None:
+            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+            timestamp = message.get("create_time") or message.get("createTime")
+            signature = f"{timestamp or 'none'}-{digest}"
+            occurrence = fallback_counts.get(signature, 0)
+            fallback_counts[signature] = occurrence + 1
+            marker_value = f"fallback-{signature}-{occurrence}"
+        marker = str(marker_value)
+        found.append(
+            (
+                marker,
+                text,
+                (
+                    has_time,
+                    time_key,
+                    marker if has_time else "",
+                    index,
+                ),
             )
-            if marker_value is None:
-                digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-                marker_value = f"fallback-{index}-{digest}"
-            return str(marker_value), text
-    return "", ""
+        )
+    return found
 
 
 def extract_latest_assistant_text(payload: dict[str, Any]) -> str:
@@ -140,7 +188,7 @@ def extract_latest_assistant_text(payload: dict[str, Any]) -> str:
 async def _conversation_detail(
     client: httpx.AsyncClient,
     conversation_id: str,
-) -> tuple[str | None, str]:
+) -> list[tuple[str, str, tuple[int, float, str, int]]] | None:
     try:
         response = await client.get(
             MESSAGES_URL,
@@ -148,10 +196,36 @@ async def _conversation_detail(
             params={"conversation_id": conversation_id, "page": 1, "page_size": 100},
         )
         if response.status_code >= 400:
-            return None, ""
-        return extract_latest_assistant_message(response.json())
+            return None
+        return _assistant_messages(response.json())
     except (httpx.HTTPError, ValueError):
-        return None, ""
+        return None
+
+
+async def _poll_new_assistant(
+    client: httpx.AsyncClient,
+    conversation_id: str,
+    baseline_markers: set[str] | None,
+    *,
+    attempts: int = 4,
+) -> str:
+    """只查询本轮新增回复；不会再次发送用户问题。"""
+    if baseline_markers is None:
+        return ""
+    for attempt in range(attempts):
+        messages = await _conversation_detail(client, conversation_id)
+        if messages is None:
+            if attempt + 1 < attempts:
+                await asyncio.sleep(2)
+            continue
+        candidates = [item for item in messages if item[0] not in baseline_markers]
+        if candidates:
+            _, text, _ = max(candidates, key=lambda item: item[2])
+            if text:
+                return text
+        if attempt + 1 < attempts:
+            await asyncio.sleep(2)
+    return ""
 
 
 async def _create_gptbots_conversation(user_id: str) -> str:
@@ -196,7 +270,12 @@ async def _send_agent_k_message(conversation_id: str, message: str) -> str:
     payload = build_agent_k_payload(conversation_id, message)
     delay = 1.0
     async with httpx.AsyncClient(timeout=GPTBOTS_TIMEOUT_SECONDS) as client:
-        baseline_marker, _ = await _conversation_detail(client, conversation_id)
+        baseline_messages = await _conversation_detail(client, conversation_id)
+        baseline_markers = (
+            {marker for marker, _, _ in baseline_messages}
+            if baseline_messages is not None
+            else None
+        )
         for attempt in range(3):
             try:
                 response = await client.post(
@@ -205,12 +284,11 @@ async def _send_agent_k_message(conversation_id: str, message: str) -> str:
                     json=payload,
                 )
             except (httpx.TimeoutException, httpx.RequestError) as exc:
-                recovered_marker, recovered = await _conversation_detail(client, conversation_id)
-                if (
-                    baseline_marker is not None
-                    and recovered
-                    and recovered_marker != baseline_marker
-                ):
+                recovered = await _poll_new_assistant(
+                    client, conversation_id, baseline_markers
+                )
+                if recovered:
+                    logger.info("Case 6A 回答读取来源：messages_fallback")
                     return recovered
                 code = "AGENT_TIMEOUT" if isinstance(exc, httpx.TimeoutException) else "AGENT_UNAVAILABLE"
                 status = 504 if code == "AGENT_TIMEOUT" else 503
@@ -225,12 +303,11 @@ async def _send_agent_k_message(conversation_id: str, message: str) -> str:
                 continue
 
             if response.status_code >= 500:
-                recovered_marker, recovered = await _conversation_detail(client, conversation_id)
-                if (
-                    baseline_marker is not None
-                    and recovered
-                    and recovered_marker != baseline_marker
-                ):
+                recovered = await _poll_new_assistant(
+                    client, conversation_id, baseline_markers
+                )
+                if recovered:
+                    logger.info("Case 6A 回答读取来源：messages_fallback")
                     return recovered
                 raise _error(503, "AGENT_UNAVAILABLE", "服务当前不可用，请稍后重试。")
             if response.status_code in (401, 403):
@@ -242,12 +319,17 @@ async def _send_agent_k_message(conversation_id: str, message: str) -> str:
                 answer = extract_assistant_text(response.json())
             except ValueError:
                 answer = ""
+            source = "blocking" if answer else "messages_fallback"
             if not answer:
-                response_marker, response_text = await _conversation_detail(client, conversation_id)
-                if baseline_marker is None or response_marker != baseline_marker:
-                    answer = response_text
+                answer = await _poll_new_assistant(
+                    client, conversation_id, baseline_markers
+                )
             if not answer:
                 raise _error(502, "AGENT_EMPTY_RESPONSE", "服务未返回有效答案，请稍后重试。")
+            logger.info(
+                "Case 6A 回答读取来源：%s",
+                source,
+            )
             return answer
 
     raise _error(503, "AGENT_UNAVAILABLE", "服务当前不可用，请稍后重试。")
@@ -278,14 +360,24 @@ async def chat_case6a(body: Case6AChatBody) -> dict[str, str]:
     session = case6a_sessions.get(body.session_id)
     if not session:
         raise _error(410, "SESSION_EXPIRED", "该对话已过期，请开启新对话。")
-    if _is_expired(session):
+    if session.tainted or _is_expired(session):
         case6a_sessions.pop(body.session_id, None)
         raise _error(410, "SESSION_EXPIRED", "该对话已过期，请开启新对话。")
     if session.lock.locked():
         raise _error(409, "SESSION_BUSY", "上一条问题仍在处理中，请稍候。")
 
     async with session.lock:
-        reply = await _send_agent_k_message(session.conversation_id, message)
+        try:
+            reply = await _send_agent_k_message(session.conversation_id, message)
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            if detail.get("code") in {
+                "AGENT_TIMEOUT",
+                "AGENT_UNAVAILABLE",
+                "AGENT_EMPTY_RESPONSE",
+            }:
+                session.tainted = True
+            raise
         session.updated_at = datetime.utcnow()
     return {"session_id": body.session_id, "reply": reply}
 

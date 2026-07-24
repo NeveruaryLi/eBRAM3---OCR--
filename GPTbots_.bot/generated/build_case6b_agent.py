@@ -141,7 +141,7 @@ def build_agent_config(source_path: Path, prompt_dir: Path, output_path: Path) -
     multimodal_input = config.setdefault("multiModal", {}).setdefault("multiModalInput", {})
     multimodal_input.update(
         {
-            "fileLimit": 1,
+            "fileLimit": 2,
             "fileMode": "SYSTEM",
             "fileSupportTypes": ["Document"],
             "fileSwitch": True,
@@ -186,7 +186,7 @@ def build_agent_config(source_path: Path, prompt_dir: Path, output_path: Path) -
     _configure_llm(
         components[6],
         prompts["AI Model-2"],
-        accepts_document=False,
+        accepts_document=True,
     )
 
     output_path = Path(output_path)

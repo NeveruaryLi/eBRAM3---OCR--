@@ -78,6 +78,10 @@
           <div><strong>协议模板</strong><small>点击或拖放含下划线占位符的 Word 模板</small></div>
           <span class="c6b-zone-state" id="templateState">未选择</span>
         </label>
+        <div class="c6b-template-actions" id="templateActions" hidden>
+          <button type="button" id="replaceTemplateBtn">更换模板</button>
+          <button type="button" id="removeTemplateBtn">移除模板</button>
+        </div>
 
         <label class="c6b-dropzone c6b-material-zone" id="materialsDropzone" for="materialsInput">
           <input id="materialsInput" name="material_files" type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.jfif,.xlsx,.docx,.csv" hidden />
@@ -87,10 +91,6 @@
         </label>
 
         <div class="c6b-file-list" id="selectedFiles"></div>
-        <label class="c6b-form-entry">
-          <span>结构化表单信息（可选 JSON）</span>
-          <textarea id="formEntriesInput" rows="3" placeholder='{"contact_name":"...","reference_no":"..."}'></textarea>
-        </label>
         <div class="c6b-upload-note">
           PDF 与图片将通过 PaddleOCR 识别；XLSX、DOCX 与 CSV 在本地安全读取，不会执行公式或外部链接。
         </div>
@@ -129,7 +129,6 @@
         <p id="templatePreflightSummary"></p>
       </div>
       <div class="c6b-preflight-grid" id="templatePreflightDetails"></div>
-      <button class="c6b-primary-btn" id="templateConfirmBtn" type="button">确认模板映射并继续</button>
     </section>
 
     <section class="c6b-review" id="reviewPanel" hidden aria-labelledby="reviewTitle">

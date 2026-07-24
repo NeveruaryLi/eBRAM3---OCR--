@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 from uuid import uuid4
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -66,15 +66,6 @@ class ReviewUpdate(BaseModel):
     )
 
 
-class TemplateUpdate(BaseModel):
-    version: int = Field(ge=1)
-    confirmed: bool
-    field_updates: list[dict[str, Any]] = Field(default_factory=list, max_length=200)
-    repeat_blocks: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
-    signature_sections: list[str] = Field(default_factory=list, max_length=50)
-    allowed_rewrites: list[str] = Field(default_factory=list, max_length=50)
-
-
 class FinalizeRequest(BaseModel):
     version: int = Field(ge=1)
     allow_unresolved: bool = False
@@ -105,7 +96,6 @@ def _sse(data: dict[str, Any]) -> str:
 async def upload_case6b(
     template_file: UploadFile = File(...),
     material_files: list[UploadFile] = File(...),
-    form_entries: str | None = Form(default=None),
 ):
     if not 1 <= len(material_files) <= MAX_MATERIALS:
         raise _error(400, "INVALID_MATERIAL_COUNT", "事实材料数量必须为 1–20 份")
@@ -134,17 +124,6 @@ async def upload_case6b(
             raise _error(400, "INVALID_MATERIAL", str(exc)) from exc
     if total_bytes > MAX_TOTAL_BYTES:
         raise _error(413, "UPLOAD_TOO_LARGE", "模板和材料总大小不能超过 100 MB")
-    parsed_form_entries: dict[str, Any] = {}
-    if form_entries:
-        try:
-            value = json.loads(form_entries)
-        except json.JSONDecodeError as exc:
-            raise _error(400, "INVALID_FORM_ENTRIES", "form_entries 必须是 JSON Object") from exc
-        if not isinstance(value, dict):
-            raise _error(400, "INVALID_FORM_ENTRIES", "form_entries 必须是 JSON Object")
-        if len(json.dumps(value, ensure_ascii=False)) > 50_000:
-            raise _error(413, "FORM_ENTRIES_TOO_LARGE", "结构化表单信息不能超过 50 KB")
-        parsed_form_entries = value
     ocr_units = sum(
         material.units for material in materials if material.file_type in {"pdf", "image"}
     )
@@ -156,7 +135,6 @@ async def upload_case6b(
         template=template,
         materials=materials,
         field_manifest=manifest,
-        form_entries=parsed_form_entries,
     )
     session_store[session_id] = [session]
     session_results_store.pop(session_id, None)
@@ -191,41 +169,6 @@ async def upload_case6b(
 @router.get("/session/{session_id}/template")
 async def get_case6b_template(session_id: str):
     session = _session(session_id)
-    return build_template_preflight(session.field_manifest, session.template_version)
-
-
-@router.patch("/session/{session_id}/template")
-async def update_case6b_template(session_id: str, body: TemplateUpdate):
-    session = _session(session_id)
-    if session.lock.locked():
-        raise _error(409, "SESSION_BUSY", "当前草案正在处理中，请稍候")
-    if body.version != session.template_version:
-        raise _error(409, "STALE_TEMPLATE", "模板预检内容已更新，请刷新后再提交")
-    if session.fields:
-        raise _error(409, "TEMPLATE_ALREADY_ANALYZED", "材料分析开始后不能修改模板映射")
-    known_ids = {field["field_id"] for field in session.field_manifest["fields"]}
-    for update in body.field_updates:
-        field_id = str(update.get("field_id", ""))
-        if field_id not in known_ids:
-            raise _error(400, "INVALID_TEMPLATE_MAPPING", f"未知模板字段：{field_id}")
-        target = next(
-            field
-            for field in session.field_manifest["fields"]
-            if field["field_id"] == field_id
-        )
-        for key in ("semantic_key", "label", "required"):
-            if key in update:
-                target[key] = update[key]
-    if body.repeat_blocks:
-        session.field_manifest["repeat_blocks"] = body.repeat_blocks
-    if body.signature_sections:
-        if any(field_id not in known_ids for field_id in body.signature_sections):
-            raise _error(400, "INVALID_TEMPLATE_MAPPING", "签署区包含未知字段")
-        session.field_manifest["signature_sections"] = body.signature_sections
-    session.field_manifest["allowed_rewrites"] = body.allowed_rewrites
-    session.field_manifest["template_confirmed"] = body.confirmed
-    session.template_version += 1
-    session.updated_at = datetime.utcnow()
     return build_template_preflight(session.field_manifest, session.template_version)
 
 
@@ -276,6 +219,17 @@ async def retry_case6b(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.delete("/session/{session_id}", status_code=204)
+async def delete_case6b_session(session_id: str) -> Response:
+    values = session_store.get(session_id)
+    if values and isinstance(values[0], Case6BSession) and values[0].lock.locked():
+        raise _error(409, "SESSION_BUSY", "当前草案正在处理中，请稍候")
+    session_store.pop(session_id, None)
+    session_results_store.pop(session_id, None)
+    session_metadata.pop(session_id, None)
+    return Response(status_code=204)
 
 
 @router.get("/session/{session_id}/review")

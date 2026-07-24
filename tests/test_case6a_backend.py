@@ -143,6 +143,35 @@ class Case6AAgentContractTests(unittest.TestCase):
         self.assertEqual(result, {"session_id": "session-1", "reply": "Grounded response"})
         self.assertNotIn("conv-secret", repr(result))
 
+    def test_unknown_delivery_taints_session_before_next_turn(self):
+        session = Case6ASession(conversation_id="conv-secret")
+        case6a_sessions["session-1"] = session
+        unknown_delivery = HTTPException(
+            status_code=504,
+            detail={"code": "AGENT_TIMEOUT", "message": "Timed out"},
+        )
+        with patch("api.case6a_routes.AGENT_K_API_KEY", "test-key"), patch(
+            "api.case6a_routes._send_agent_k_message",
+            new=AsyncMock(side_effect=unknown_delivery),
+        ):
+            with self.assertRaises(HTTPException):
+                asyncio.run(
+                    chat_case6a(
+                        Case6AChatBody(session_id="session-1", message="First question")
+                    )
+                )
+
+        self.assertTrue(session.tainted)
+        with patch("api.case6a_routes.AGENT_K_API_KEY", "test-key"):
+            with self.assertRaises(HTTPException) as next_turn:
+                asyncio.run(
+                    chat_case6a(
+                        Case6AChatBody(session_id="session-1", message="Next question")
+                    )
+                )
+        self.assertEqual(410, next_turn.exception.status_code)
+        self.assertEqual("SESSION_EXPIRED", next_turn.exception.detail["code"])
+
     def test_expired_busy_and_missing_configuration_are_explicit(self):
         expired = Case6ASession(conversation_id="conv-expired")
         expired.updated_at = datetime.utcnow() - timedelta(hours=3)
@@ -234,6 +263,46 @@ class Case6AAgentContractTests(unittest.TestCase):
 
         self.assertEqual(error.exception.status_code, 503)
         self.assertEqual(error.exception.detail["code"], "AGENT_UNAVAILABLE")
+
+    def test_failed_baseline_query_never_recovers_with_stale_answer(self):
+        get_calls = 0
+        post_calls = 0
+
+        def transport(request: httpx.Request) -> httpx.Response:
+            nonlocal get_calls, post_calls
+            if request.method == "POST":
+                post_calls += 1
+                return httpx.Response(200, json={"output": []}, request=request)
+            get_calls += 1
+            if get_calls == 1:
+                return httpx.Response(500, json={"error": "temporary"}, request=request)
+            return httpx.Response(
+                200,
+                json={
+                    "conversation_content": [
+                        {
+                            "role": "assistant",
+                            "message_id": "reply-old",
+                            "content": [{"type": "text", "text": "Previous answer"}],
+                        }
+                    ]
+                },
+                request=request,
+            )
+
+        real_client = httpx.AsyncClient
+        with patch(
+            "api.case6a_routes.httpx.AsyncClient",
+            side_effect=lambda **_: real_client(
+                transport=httpx.MockTransport(transport)
+            ),
+        ):
+            with self.assertRaises(HTTPException) as error:
+                asyncio.run(_send_agent_k_message("conv-private", "New question"))
+
+        self.assertEqual(error.exception.detail["code"], "AGENT_EMPTY_RESPONSE")
+        self.assertEqual(post_calls, 1)
+        self.assertEqual(get_calls, 1)
 
     def test_empty_blocking_response_polls_for_new_reply_without_resending(self):
         get_calls = 0

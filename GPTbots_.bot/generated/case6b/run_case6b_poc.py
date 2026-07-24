@@ -17,7 +17,13 @@ from typing import Any
 from dotenv import load_dotenv
 
 
-ALLOWED_STATUSES = {"FILLED", "NEEDS_CONFIRMATION", "LEAVE_BLANK", "REMOVE"}
+ALLOWED_STATUSES = {
+    "FILLED",
+    "NEEDS_CONFIRMATION",
+    "LEAVE_BLANK",
+    "KEEP_BLANK",
+    "REMOVE",
+}
 
 
 def _http_json(
@@ -120,7 +126,20 @@ def _parse_json_object(text: str) -> dict[str, Any]:
     fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", cleaned, flags=re.S | re.I)
     if fenced:
         cleaned = fenced.group(1)
-    value = json.loads(cleaned)
+    try:
+        value = json.loads(cleaned)
+    except json.JSONDecodeError:
+        # Keep the exact model text only in the repository's ignored output directory.
+        # This makes schema regressions diagnosable without printing customer facts or
+        # runtime identifiers to tracked reports and console logs.
+        debug_path = (
+            Path(__file__).resolve().parents[3]
+            / "output"
+            / "case6b-poc-invalid-agent-json.txt"
+        )
+        debug_path.parent.mkdir(parents=True, exist_ok=True)
+        debug_path.write_text(cleaned, encoding="utf-8")
+        raise
     if not isinstance(value, dict):
         raise ValueError("Agent response must be one JSON object")
     return value
@@ -215,14 +234,17 @@ class AgentLClient:
                 raise
 
             text = _blocking_text(response)
-            messages = self.messages(conversation_id)
+            try:
+                messages = self.messages(conversation_id)
+            except RuntimeError:
+                messages = baseline
             new_messages = [
                 (message_marker, message_text)
                 for message_marker, message_text in messages
                 if message_marker not in baseline_markers
             ]
             marker = new_messages[-1][0] if new_messages else ""
-            if not text and new_messages:
+            if new_messages:
                 text = new_messages[-1][1]
             if not text:
                 raise RuntimeError("GPTBots returned no Assistant JSON")
@@ -314,6 +336,12 @@ def _validate_fill(payload: dict[str, Any], expected: dict[str, Any]) -> list[st
         if status != expected_field["status"]:
             failures.append(
                 f"{field['field_id']}: expected {expected_field['status']}, got {status}"
+            )
+        expected_action = expected_field.get("service_action")
+        if expected_action and field.get("service_action") != expected_action:
+            failures.append(
+                f"{field['field_id']}: expected service_action "
+                f"{expected_action}, got {field.get('service_action')}"
             )
         if status == "FILLED":
             if _normalize(field.get("value")) != _normalize(expected_field["value"]):
@@ -434,14 +462,34 @@ def main() -> None:
     client.verify_key()
     conversation_id = client.create_conversation()
 
-    first_text = (
-        "[CASE6B_PHASE:TEMPLATE_PARSE]\n"
-        + json.dumps(_placeholder_input(manifest), ensure_ascii=False, separators=(",", ":"))
-    )
+    first_context = "\n".join(
+        [
+            "[CASE6B_PHASE:TEMPLATE_PARSE]",
+            "",
+            "# Case 6B template context",
+            "",
+            "## Detected fields",
+            "",
+            "```json",
+            json.dumps(_placeholder_input(manifest), ensure_ascii=False, indent=2),
+            "```",
+        ]
+    ).encode("utf-8")
     field_list, first_message_id = client.send(
         conversation_id,
         [
-            {"type": "text", "text": first_text},
+            {
+                "type": "text",
+                "text": (
+                    "[CASE6B_PHASE:TEMPLATE_PARSE]\n"
+                    f"Attachment 1, {args.template.name}, is the original DOCX agreement "
+                    "template. Attachment 2, case6b_template_context.md, contains the "
+                    "detected placeholders, stable field IDs, locators, and required "
+                    "output schema. Read both attachments together without adding, "
+                    "removing, reordering, or filling fields. Return exactly one JSON "
+                    "Object and no commentary or Markdown fences."
+                ),
+            },
             {
                 "type": "document",
                 "document": [
@@ -449,6 +497,13 @@ def main() -> None:
                         "base64_content": template_b64,
                         "format": "docx",
                         "name": args.template.name,
+                    },
+                    {
+                        "base64_content": base64.b64encode(first_context).decode(
+                            "ascii"
+                        ),
+                        "format": "md",
+                        "name": "case6b_template_context.md",
                     }
                 ],
             },
@@ -469,17 +524,52 @@ def main() -> None:
             "Agent L template parsing failed; field filling was not sent to preserve phase order"
         )
 
-    second_text = (
-        "[CASE6B_PHASE:FIELD_FILL]\n"
-        + json.dumps(
-            {"field_list": field_list, "full_summary": summary},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-    )
+    second_context = "\n".join(
+        [
+            "[CASE6B_PHASE:FIELD_FILL]",
+            "",
+            "# Case 6B field-fill context",
+            "",
+            "## Field list",
+            "",
+            "```json",
+            json.dumps(field_list, ensure_ascii=False, indent=2),
+            "```",
+            "",
+            "## Evidence summary",
+            "",
+            "```json",
+            json.dumps(summary, ensure_ascii=False, indent=2),
+            "```",
+        ]
+    ).encode("utf-8")
     fill_result, second_message_id = client.send(
         conversation_id,
-        [{"type": "text", "text": second_text}],
+        [
+            {
+                "type": "text",
+                "text": (
+                    "[CASE6B_PHASE:FIELD_FILL]\n"
+                    "The attachment case6b_field_fill_context.md contains the detected "
+                    "field list and evidence summary from all source files. Treat it as "
+                    "the sole source of field IDs and facts, fill every listed field "
+                    "once, and preserve evidence references. Return exactly one JSON "
+                    "Object and no commentary or Markdown fences."
+                ),
+            },
+            {
+                "type": "document",
+                "document": [
+                    {
+                        "base64_content": base64.b64encode(second_context).decode(
+                            "ascii"
+                        ),
+                        "format": "md",
+                        "name": "case6b_field_fill_context.md",
+                    }
+                ],
+            }
+        ],
     )
     failures.extend(_validate_fill(fill_result, expected))
     second_trace = client.trace_status(second_message_id)

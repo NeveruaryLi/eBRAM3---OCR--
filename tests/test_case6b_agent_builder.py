@@ -127,6 +127,10 @@ class Case6BAgentBuilderTests(unittest.TestCase):
                 if message["type"] == "Role"
             )["text"],
         )
+        poc_source = (CASE6B_DIR / "run_case6b_poc.py").read_text(encoding="utf-8")
+        self.assertIn("is the original DOCX agreement", poc_source)
+        self.assertIn("field list and evidence summary from all source files", poc_source)
+        self.assertIn("Object and no commentary or Markdown fences", poc_source)
 
     def test_case6b_fixtures_cover_template_and_all_nine_materials(self):
         manifest = json.loads(
@@ -162,12 +166,29 @@ class Case6BAgentBuilderTests(unittest.TestCase):
             {field["field_id"] for field in fields},
         )
         self.assertEqual(
-            sum(field["status"] == "KEEP_BLANK" for field in expected_fields),
+            sum(field["status"] == "REMOVE" for field in expected_fields),
             8,
         )
         self.assertEqual(
             sum(field["status"] == "LEAVE_BLANK" for field in expected_fields),
-            7,
+            6,
+        )
+        repeatable_ids = {
+            field["field_id"]
+            for field in fields
+            if field["field_kind"] in {"repeatable_service", "repeatable_price"}
+        }
+        self.assertTrue(
+            all(
+                field.get("service_action") in {
+                    "included",
+                    "optional",
+                    "blank",
+                    "remove",
+                }
+                for field in expected_fields
+                if field["field_id"] in repeatable_ids
+            )
         )
 
     def test_unknown_delivery_recovers_new_message_without_resending(self):
@@ -190,6 +211,53 @@ class Case6BAgentBuilderTests(unittest.TestCase):
         self.assertEqual(result, {"phase": "TEMPLATE_PARSE"})
         self.assertEqual(marker, "new-message")
         self.assertEqual(http_json.call_count, 1)
+
+    def test_successful_send_prefers_new_assistant_message_over_blocking_debug_text(self):
+        poc = _load_poc_module()
+        client = poc.AgentLClient("sg", "test-key")
+        baseline = [("old-message", '{"old":true}')]
+        current = baseline + [("new-message", '{"phase":"FIELD_FILL"}')]
+
+        with (
+            patch.object(client, "messages", side_effect=[baseline, current]),
+            patch.object(
+                poc,
+                "_http_json",
+                return_value={"message": "{'answer': 'attachment debug output'}"},
+            ),
+        ):
+            result, marker = client.send(
+                "conversation",
+                [{"type": "text", "text": "[CASE6B_PHASE:FIELD_FILL]"}],
+            )
+
+        self.assertEqual(result, {"phase": "FIELD_FILL"})
+        self.assertEqual(marker, "new-message")
+
+    def test_successful_send_uses_blocking_json_when_message_lookup_fails(self):
+        poc = _load_poc_module()
+        client = poc.AgentLClient("sg", "test-key")
+        baseline = [("old-message", '{"old":true}')]
+
+        with (
+            patch.object(
+                client,
+                "messages",
+                side_effect=[baseline, RuntimeError("temporary lookup failure")],
+            ),
+            patch.object(
+                poc,
+                "_http_json",
+                return_value={"answer": '{"phase":"FIELD_FILL"}'},
+            ),
+        ):
+            result, marker = client.send(
+                "conversation",
+                [{"type": "text", "text": "[CASE6B_PHASE:FIELD_FILL]"}],
+            )
+
+        self.assertEqual(result, {"phase": "FIELD_FILL"})
+        self.assertEqual(marker, "")
 
     def test_network_timeout_is_exposed_as_unknown_delivery(self):
         poc = _load_poc_module()

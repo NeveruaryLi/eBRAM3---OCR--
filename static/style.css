@@ -595,7 +595,20 @@ html, body {
   color: var(--text) !important;
   background: rgba(128,128,128,0.18);
 }
+.history-menu-btn:focus-visible {
+  opacity: 1;
+  color: var(--text);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 :root.light .history-menu-btn:hover { background: rgba(0,0,0,0.1); }
+
+@media (max-width: 760px) {
+  .history-menu-btn {
+    opacity: 1;
+    color: var(--text-muted);
+  }
+}
 
 /* ── History dropdown menu ───────────────────────────────────────────────── */
 .history-dropdown {
