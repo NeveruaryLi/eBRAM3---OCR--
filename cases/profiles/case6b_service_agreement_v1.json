@@ -17,6 +17,7 @@
     "party_identification",
     "service_rows",
     "payment_summary",
+    "term_clause",
     "signature_company_names"
   ],
   "field_semantic_keys": {

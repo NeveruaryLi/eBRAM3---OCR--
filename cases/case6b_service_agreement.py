@@ -816,8 +816,35 @@ def _apply_service_agreement_rewrites(
                 "Amount after receipt of the monthly service report and invoice: "
                 f"HKD {total:,} per service month.",
             )
-    provider = str(semantic.get("provider_identity", {}).get("value", "")).strip()
-    client = str(semantic.get("client_identity", {}).get("value", "")).strip()
+    term_value = str(semantic.get("agreement_term", {}).get("value", "")).strip()
+    term_definition = next(
+        (
+            definition
+            for definition in manifest["fields"]
+            if definition.get("semantic_key") == "agreement_term"
+        ),
+        None,
+    )
+    if term_value and term_definition:
+        paragraph, _ = _paragraph_for_locator(document, term_definition["locator"])
+        paragraph.text = (
+            "This Agreement will commence on the Effective Date and will remain "
+            f"in force for {term_value} from the Effective Date."
+        )
+    def company_name(value: str) -> str:
+        return re.sub(
+            r"\s*\((?:CR\s*(?:No\.?|Number)?[:.]?\s*)?\d+\)\s*",
+            "",
+            value,
+            flags=re.I,
+        ).strip()
+
+    provider = company_name(
+        str(semantic.get("provider_identity", {}).get("value", "")).strip()
+    )
+    client = company_name(
+        str(semantic.get("client_identity", {}).get("value", "")).strip()
+    )
     if document.tables:
         signature_table = document.tables[0]
         for cell, company in zip(signature_table.rows[0].cells[:2], (provider, client)):
@@ -898,12 +925,12 @@ def render_draft_docx(
     for locator, replacement, highlight in table_replacements:
         paragraph, blank_index = _paragraph_for_locator(document, locator)
         _replace_blank(paragraph, blank_index, replacement, highlight)
-    for paragraph_index in sorted(remove_paragraphs, reverse=True):
-        paragraph = document.paragraphs[paragraph_index]
-        paragraph._element.getparent().remove(paragraph._element)
     _apply_service_agreement_rewrites(
         document, manifest, fields_by_id
     )
+    for paragraph_index in sorted(remove_paragraphs, reverse=True):
+        paragraph = document.paragraphs[paragraph_index]
+        paragraph._element.getparent().remove(paragraph._element)
 
     output = io.BytesIO()
     document.save(output)

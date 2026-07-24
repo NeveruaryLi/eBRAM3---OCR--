@@ -72,7 +72,30 @@ def main() -> int:
             event
             for event in events
             if event.get("type") in {"error", "fatal_error"}
+            and event.get("material_id")
         ]
+        for _ in range(2):
+            if not errors:
+                break
+            retry_events = []
+            for failure in errors:
+                retry = client.post(
+                    f"/case6b/session/{session_id}/retry",
+                    params={"material_id": failure["material_id"]},
+                )
+                retry.raise_for_status()
+                retry_events.extend(
+                    json.loads(line[5:].strip())
+                    for line in retry.text.splitlines()
+                    if line.startswith("data:")
+                )
+            events.extend(retry_events)
+            errors = [
+                event
+                for event in retry_events
+                if event.get("type") in {"error", "fatal_error"}
+                and event.get("material_id")
+            ]
         print(
             json.dumps(
                 {

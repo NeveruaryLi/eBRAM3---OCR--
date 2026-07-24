@@ -383,6 +383,10 @@ async function saveReview() {
 async function finalizeDraft() {
   if (!state.review || state.busy) return;
   if (!await saveReview()) return;
+  if (state.review.unresolved_conflict_count > 0) {
+    showError(`仍有 ${state.review.unresolved_conflict_count} 项材料冲突待解决，无法生成草案。`);
+    return;
+  }
   const allow = state.review.unresolved_count === 0 || window.confirm(`仍有 ${state.review.unresolved_count} 个必填字段待确认。继续生成时会以黄色标记写入草案，是否继续？`);
   if (!allow) return;
   setBusy(true); setStage('generate'); els.status.textContent = '正在生成'; els.progress.hidden = false; els.progressMessage.textContent = '正在保留原模板版式并生成 DOCX / PDF...';
