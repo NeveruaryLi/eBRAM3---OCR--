@@ -14,8 +14,11 @@ from cases.case6b_service_agreement import (
     Case6BSession,
     MaterialRecord,
     apply_review_changes,
+    build_template_preflight,
     build_agent_l_fill_payload,
     build_agent_l_template_payload,
+    extract_csv_markdown,
+    extract_docx_markdown,
     extract_template_manifest,
     extract_xlsx_markdown,
     image_to_pdf,
@@ -43,6 +46,25 @@ class Case6BCoreTests(unittest.TestCase):
             "t000_r000_c001_p003_f01",
             manifest["fields"][-1]["field_id"],
         )
+        self.assertEqual("service_agreement_v1", manifest["profile_id"])
+        self.assertTrue(manifest["template_confirmed"])
+        self.assertEqual("30 days", manifest["template_defaults"]["termination_notice"])
+        self.assertEqual("10 days", manifest["template_defaults"]["materials_return"])
+
+    def test_bracket_placeholders_are_detected_for_unknown_templates(self):
+        output = io.BytesIO()
+        document = Document()
+        document.add_heading("Consulting Agreement")
+        document.add_paragraph("Between [Provider_Name] and [Client_Name].")
+        document.save(output)
+        template = validate_template(output.getvalue(), "brackets.docx")
+        manifest = extract_template_manifest(template.content)
+        self.assertEqual(2, len(manifest["fields"]))
+        self.assertFalse(manifest["template_confirmed"])
+        self.assertEqual("bracket", manifest["fields"][0]["placeholder_type"])
+        preflight = build_template_preflight(manifest)
+        self.assertEqual("detected", preflight["recognition_mode"])
+        self.assertEqual(2, preflight["field_count"])
 
     def test_rejects_docx_without_placeholders(self):
         output = io.BytesIO()
@@ -62,6 +84,27 @@ class Case6BCoreTests(unittest.TestCase):
         self.assertIn("Service Component,Included,KPIs", markdown)
         self.assertIn("A2: Remote Helpdesk (8×5)", markdown)
         self.assertIn("F5: 10000", markdown)
+
+    def test_extracts_docx_and_csv_materials_with_source_locations(self):
+        docx = io.BytesIO()
+        document = Document()
+        document.add_paragraph("Provider CR Number: 2897654")
+        document.save(docx)
+        docx_material = validate_material(docx.getvalue(), "intake.docx")
+        docx_markdown, docx_units = extract_docx_markdown(
+            docx_material.content, docx_material.filename
+        )
+        csv_content = b"service,price\\nHelpdesk,HKD 20000 per month\\n"
+        csv_material = validate_material(csv_content, "pricing.csv")
+        csv_markdown, csv_units = extract_csv_markdown(
+            csv_material.content, csv_material.filename
+        )
+        self.assertEqual("docx", docx_material.file_type)
+        self.assertEqual(1, docx_units)
+        self.assertIn("paragraph:1", docx_markdown)
+        self.assertEqual("csv", csv_material.file_type)
+        self.assertEqual(1, csv_units)
+        self.assertIn("row:2", csv_markdown)
 
     def test_image_is_wrapped_as_single_page_pdf(self):
         content = (SAMPLES / "UC6B_9_Teams_chatlog.jfif").read_bytes()
@@ -177,6 +220,63 @@ class Case6BCoreTests(unittest.TestCase):
         )
         self.assertIn("Signature:_________________________", signature_text)
 
+    def test_review_supports_optional_and_blank_service_rows(self):
+        manifest = json.loads(
+            (FIXTURES / "template_field_manifest.json").read_text("utf-8")
+        )
+        fields = json.loads((FIXTURES / "expected_fill.json").read_text("utf-8"))[
+            "fields"
+        ]
+        session = Case6BSession(
+            template=validate_template(TEMPLATE.read_bytes(), TEMPLATE.name),
+            materials=[],
+            field_manifest=manifest,
+            fields=fields,
+            review_version=1,
+        )
+        apply_review_changes(
+            session,
+            version=1,
+            field_updates=[],
+            service_rows=[
+                {
+                    "group_index": 5,
+                    "action": "optional",
+                    "name": "Optional On-site Support",
+                    "price": "HKD 900 per hour (minimum 2 hours)",
+                },
+                {
+                    "group_index": 7,
+                    "action": "blank",
+                    "name": "",
+                    "price": "",
+                },
+            ],
+        )
+        row5 = [
+            item
+            for item in session.fields
+            if next(
+                field
+                for field in manifest["fields"]
+                if field["field_id"] == item["field_id"]
+            ).get("group_index")
+            == 5
+        ]
+        row7 = [
+            item
+            for item in session.fields
+            if next(
+                field
+                for field in manifest["fields"]
+                if field["field_id"] == item["field_id"]
+            ).get("group_index")
+            == 7
+        ]
+        self.assertTrue(all(item["service_action"] == "optional" for item in row5))
+        self.assertTrue(all(item["status"] == "KEEP_BLANK" for item in row7))
+        self.assertTrue(all(item["source_type"] == "user_confirmed" for item in row5))
+
 
 class Case6BRouteTests(unittest.TestCase):
     def setUp(self):
@@ -223,7 +323,51 @@ class Case6BRouteTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(37, payload["placeholder_count"])
         self.assertEqual(1, len(payload["materials"]))
+        self.assertEqual("service_agreement_v1", payload["template"]["profile_id"])
+        self.assertTrue(payload["template"]["confirmed"])
+        self.assertIn("defaults", payload["template"])
         self.assertEqual("case6b", session_metadata[payload["session_id"]]["case_type"])
+
+    def test_unknown_template_requires_preflight_confirmation(self):
+        template_stream = io.BytesIO()
+        document = Document()
+        document.add_paragraph("Agreement between [Provider_Name] and [Client_Name].")
+        document.save(template_stream)
+        response = self.client.post(
+            "/case6b/session/upload",
+            files=[
+                (
+                    "template_file",
+                    (
+                        "unknown.docx",
+                        template_stream.getvalue(),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ),
+                ),
+                (
+                    "material_files",
+                    (
+                        "pricing.xlsx",
+                        (
+                            SAMPLES
+                            / "UC6B_5_Scope, Service Components & Pricing Breakdown.xlsx"
+                        ).read_bytes(),
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    ),
+                ),
+            ],
+        )
+        self.assertEqual(200, response.status_code, response.text)
+        session_id = response.json()["session_id"]
+        self.assertFalse(response.json()["template"]["confirmed"])
+        detail = self.client.get(f"/case6b/session/{session_id}/template")
+        self.assertEqual(200, detail.status_code)
+        confirmed = self.client.patch(
+            f"/case6b/session/{session_id}/template",
+            json={"version": 1, "confirmed": True},
+        )
+        self.assertEqual(200, confirmed.status_code, confirmed.text)
+        self.assertTrue(confirmed.json()["confirmed"])
 
     def test_review_unknown_session_returns_410(self):
         response = self.client.get("/case6b/session/missing/review")
@@ -303,6 +447,23 @@ class Case6BRouteTests(unittest.TestCase):
         )
         self.assertEqual(200, report.status_code)
         self.assertTrue(report.content.startswith(b"PK"))
+
+    def test_finalize_is_blocked_by_unresolved_conflicts(self):
+        session_id = self._ready_session()
+        session_store[session_id][0].conflicts = [
+            {
+                "conflict_id": "term-1",
+                "semantic_key": "agreement_term",
+                "candidates": [{"value": "12 months"}, {"value": "24 months"}],
+                "resolved": False,
+            }
+        ]
+        blocked = self.client.post(
+            f"/case6b/session/{session_id}/finalize",
+            json={"version": 1, "allow_unresolved": True},
+        )
+        self.assertEqual(409, blocked.status_code)
+        self.assertEqual("UNRESOLVED_CONFLICTS", blocked.json()["detail"]["code"])
 
     def test_single_material_retry_rejects_unknown_or_nonfailed_target(self):
         session_id = self._ready_session()
