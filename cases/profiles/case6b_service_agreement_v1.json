@@ -43,6 +43,57 @@
     "termination_notice": "30",
     "materials_return": "10"
   },
+  "evidence_mappings": {
+    "provider_identity": ["provider_identity", "provider_name"],
+    "provider_cr_number": ["provider_cr_number", "service_provider_cr_number"],
+    "provider_address": ["provider_address", "service_provider_address"],
+    "client_identity": ["client_identity", "client_name"],
+    "client_cr_number": ["client_cr_number"],
+    "client_address": ["client_address"],
+    "invoice_payment_days": ["invoice_payment_days", "payment_terms"],
+    "agreement_term": ["agreement_term", "term_duration", "contract_term"],
+    "signing_payment": [
+      "kickoff_meeting_payment_trigger",
+      "contract_signing_payment_trigger",
+      "agreement_signing_payment_trigger"
+    ],
+    "onboarding_payment": [
+      "onboarding_complete_payment_trigger",
+      "onboarding_completion_payment_trigger"
+    ]
+  },
+  "service_fact_prefixes": {
+    "1": {
+      "prefix": "service_remote_helpdesk",
+      "action": "included",
+      "billing_basis": "per month"
+    },
+    "2": {
+      "prefix": "service_endpoint_patching",
+      "action": "included",
+      "billing_basis": "per month"
+    },
+    "3": {
+      "prefix": "service_m365_tenant_admin",
+      "action": "included",
+      "billing_basis": "per month"
+    },
+    "4": {
+      "prefix": "service_monthly_reporting",
+      "action": "included",
+      "billing_basis": "per month"
+    },
+    "5": {
+      "prefix": "service_onsite_support",
+      "action": "optional",
+      "price_from": "notes"
+    },
+    "6": {
+      "prefix": "service_asset_inventory",
+      "action": "optional",
+      "price_from": "notes"
+    }
+  },
   "execution_blank_semantic_keys": [
     "effective_date",
     "provider_signatory_name",

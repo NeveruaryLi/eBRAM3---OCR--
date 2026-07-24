@@ -1,6 +1,7 @@
 import io
 import json
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,6 +14,7 @@ from app import app
 from cases.case6b_service_agreement import (
     Case6BSession,
     MaterialRecord,
+    _apply_profile_evidence_enrichment,
     apply_review_changes,
     build_template_preflight,
     build_agent_l_fill_payload,
@@ -23,6 +25,7 @@ from cases.case6b_service_agreement import (
     detect_fact_conflicts,
     extract_xlsx_markdown,
     image_to_pdf,
+    normalize_agent_conflicts,
     ocr_submission_filename,
     parse_agent_json,
     render_draft_docx,
@@ -74,6 +77,29 @@ class Case6BCoreTests(unittest.TestCase):
         document.save(output)
         with self.assertRaisesRegex(ValueError, "下划线"):
             validate_template(output.getvalue(), "plain.docx")
+
+    def test_rejects_unsupported_complex_word_objects(self):
+        base = io.BytesIO()
+        document = Document()
+        document.add_paragraph("Field: ____________________")
+        document.save(base)
+        markers = {
+            "Word 内容控件": b"<w:sdt>",
+            "文本框": b"<w:txbxContent>",
+            "邮件合并域": b"MERGEFIELD",
+        }
+        for expected, marker in markers.items():
+            source = zipfile.ZipFile(io.BytesIO(base.getvalue()))
+            output = io.BytesIO()
+            with source, zipfile.ZipFile(output, "w") as target:
+                for item in source.infolist():
+                    content = source.read(item.filename)
+                    if item.filename == "word/document.xml":
+                        content = content.replace(b"</w:body>", marker + b"</w:body>")
+                    target.writestr(item, content)
+            with self.subTest(expected=expected):
+                with self.assertRaisesRegex(ValueError, expected):
+                    validate_template(output.getvalue(), "complex.docx")
 
     def test_extracts_xlsx_with_sheet_and_cell_evidence(self):
         content = (
@@ -279,6 +305,44 @@ class Case6BCoreTests(unittest.TestCase):
         self.assertTrue(all(item["status"] == "KEEP_BLANK" for item in row7))
         self.assertTrue(all(item["source_type"] == "user_confirmed" for item in row5))
 
+    def test_conflict_resolution_updates_matching_review_field(self):
+        manifest = json.loads(
+            (FIXTURES / "template_field_manifest.json").read_text("utf-8")
+        )
+        fields = json.loads((FIXTURES / "expected_fill.json").read_text("utf-8"))[
+            "fields"
+        ]
+        session = Case6BSession(
+            template=validate_template(TEMPLATE.read_bytes(), TEMPLATE.name),
+            materials=[],
+            field_manifest=manifest,
+            fields=fields,
+            conflicts=[
+                {
+                    "conflict_id": "invoice-days",
+                    "semantic_key": "invoice_payment_days",
+                    "candidates": [{"value": "30"}, {"value": "45"}],
+                    "resolved": False,
+                }
+            ],
+            review_version=1,
+        )
+        apply_review_changes(
+            session,
+            version=1,
+            field_updates=[],
+            service_rows=[],
+            conflict_resolutions=[
+                {"conflict_id": "invoice-days", "value": "45"}
+            ],
+        )
+        target = next(
+            field for field in session.fields if field["field_id"] == "p021_f01"
+        )
+        self.assertEqual("USER_CONFIRMED", target["status"])
+        self.assertEqual("45", target["value"])
+        self.assertTrue(session.conflicts[0]["resolved"])
+
     def test_conflicts_only_compare_the_same_explicit_scalar_semantics(self):
         sources = [
             {
@@ -312,6 +376,12 @@ class Case6BCoreTests(unittest.TestCase):
                         "category": "party",
                     },
                     {
+                        "semantic_key": "provider_identity",
+                        "normalized_value": "Karen",
+                        "raw_value": "Karen (ServiceStar)",
+                        "category": "party",
+                    },
+                    {
                         "semantic_key": "service_price",
                         "normalized_value": "HKD 900 per hour",
                         "raw_value": "HKD 900 per hour",
@@ -329,6 +399,164 @@ class Case6BCoreTests(unittest.TestCase):
         conflicts = detect_fact_conflicts(sources)
         self.assertEqual(1, len(conflicts))
         self.assertEqual("agreement_term", conflicts[0]["semantic_key"])
+
+    def test_agent_missing_field_notes_are_not_treated_as_conflicts(self):
+        normalized = normalize_agent_conflicts(
+            [
+                {
+                    "field_id": "p002_f01",
+                    "reason": "Effective date is not supplied.",
+                },
+                {
+                    "semantic_key": "agreement_term",
+                    "candidates": [{"value": "12 months"}, {"value": "24 months"}],
+                },
+            ]
+        )
+        self.assertEqual(1, len(normalized))
+        self.assertEqual("agreement_term", normalized[0]["semantic_key"])
+        self.assertTrue(normalized[0]["conflict_id"].startswith("agent-"))
+
+    def test_duration_conflicts_use_raw_unit_when_normalized_value_is_numeric(self):
+        conflicts = detect_fact_conflicts(
+            [
+                {
+                    "facts": [
+                        {
+                            "semantic_key": "agreement_term",
+                            "raw_value": "12 months",
+                            "normalized_value": "12",
+                            "category": "term",
+                        }
+                    ]
+                },
+                {
+                    "facts": [
+                        {
+                            "semantic_key": "agreement_term",
+                            "raw_value": "12-month term",
+                            "normalized_value": "12 months",
+                            "category": "term",
+                        }
+                    ]
+                },
+            ]
+        )
+        self.assertEqual([], conflicts)
+
+    def test_customer_profile_enriches_fields_from_structured_evidence(self):
+        manifest = extract_template_manifest(TEMPLATE.read_bytes())
+        fields = [
+            {
+                "field_id": definition["field_id"],
+                "status": "NEEDS_CONFIRMATION",
+                "value": "",
+                "evidence": [],
+                "source_type": "evidence",
+            }
+            for definition in manifest["fields"]
+        ]
+        facts = [
+            ("provider_identity", "ServiceStar Solutions Limited"),
+            ("provider_cr_number", "2897654"),
+            ("client_identity", "ClientCo Limited"),
+            ("client_cr_number", "3234567"),
+            ("provider_address", "Unit 1201, Example Tower, Hong Kong"),
+            ("client_address", "88 Client Road, Hong Kong"),
+            ("invoice_payment_days", "Net 30"),
+            ("agreement_term", "12"),
+            ("kickoff_meeting_payment_trigger", "HKD 0"),
+            ("onboarding_complete_payment_trigger", "HKD 0"),
+            ("service_remote_helpdesk_name", "Remote Helpdesk (8×5)"),
+            (
+                "service_remote_helpdesk_scope",
+                "Remote incident logging, triage and support",
+            ),
+            ("service_remote_helpdesk_monthly_value", "20000"),
+            ("service_endpoint_patching_name", "Endpoint Patching"),
+            (
+                "service_endpoint_patching_scope",
+                "Monthly operating system and security patching",
+            ),
+            ("service_endpoint_patching_monthly_value", "16000"),
+            (
+                "service_m365_tenant_admin_name",
+                "Microsoft 365 Tenant Administration",
+            ),
+            (
+                "service_m365_tenant_admin_scope",
+                "User and licence administration",
+            ),
+            ("service_m365_tenant_admin_monthly_value", "22000"),
+            ("service_monthly_reporting_name", "Monthly KPI Reporting"),
+            (
+                "service_monthly_reporting_scope",
+                "Monthly service performance report",
+            ),
+            ("service_monthly_reporting_monthly_value", "10000"),
+            ("service_onsite_support_name", "On-site Support"),
+            (
+                "service_onsite_support_notes",
+                "HKD 900/hr (min 2 hrs)",
+            ),
+            ("service_asset_inventory_name", "One-off Asset Inventory"),
+            (
+                "service_asset_inventory_notes",
+                "Optional at HKD 8,000 per run",
+            ),
+        ]
+        session = Case6BSession(
+            template=validate_template(TEMPLATE.read_bytes(), TEMPLATE.name),
+            materials=[],
+            field_manifest=manifest,
+            fields=fields,
+            full_summary={
+                "sources": [
+                    {
+                        "filename": "customer-materials",
+                        "facts": [
+                            {
+                                "semantic_key": key,
+                                "raw_value": (
+                                    "12 months"
+                                    if key == "agreement_term"
+                                    else value
+                                ),
+                                "normalized_value": value,
+                                "source": "customer-materials",
+                                "locator": f"fact:{index}",
+                            }
+                            for index, (key, value) in enumerate(facts, 1)
+                        ],
+                    }
+                ]
+            },
+        )
+
+        _apply_profile_evidence_enrichment(session)
+
+        by_id = {field["field_id"]: field for field in session.fields}
+        self.assertEqual(
+            "ServiceStar Solutions Limited (CR No.: 2897654)",
+            by_id["p002_f02"]["value"],
+        )
+        self.assertEqual(
+            "ClientCo Limited (CR No.: 3234567)",
+            by_id["p002_f04"]["value"],
+        )
+        self.assertEqual("HKD 0", by_id["p016_f01"]["value"])
+        self.assertEqual("HKD 0", by_id["p016_f02"]["value"])
+        self.assertEqual("30", by_id["p021_f01"]["value"])
+        self.assertEqual("12 months", by_id["p024_f01"]["value"])
+        self.assertEqual("included", by_id["p006_f01"]["service_action"])
+        self.assertEqual("HKD 20,000 per month", by_id["p006_f02"]["value"])
+        self.assertEqual("optional", by_id["p010_f01"]["service_action"])
+        self.assertEqual(
+            "HKD 900 per hour (minimum 2 hours)",
+            by_id["p010_f02"]["value"],
+        )
+        self.assertEqual("HKD 8,000 per run", by_id["p011_f02"]["value"])
+        self.assertTrue(by_id["p011_f02"]["evidence"])
 
     def test_customer_profile_renders_gold_structure_and_payment_total(self):
         manifest = extract_template_manifest(TEMPLATE.read_bytes())
@@ -409,6 +637,8 @@ class Case6BCoreTests(unittest.TestCase):
         self.assertIn("Optional On-site Support", body)
         self.assertIn("HKD 68,000 per service month", body)
         self.assertIn("12 months", body)
+        self.assertEqual(1, body.count("remain in force for 12 months"))
+        self.assertNotIn("will end on 12 months", body)
         self.assertEqual(10, body.count("(Price:"))
         self.assertIn("ServiceStar Solutions Limited", signatures)
         self.assertIn("ClientCo Limited", signatures)
@@ -438,6 +668,14 @@ class Case6BRouteTests(unittest.TestCase):
     def test_upload_sample_returns_session_and_37_fields(self):
         response = self.client.post(
             "/case6b/session/upload",
+            data={
+                "form_entries": json.dumps(
+                    {
+                        "contact_name": "Alex Chan",
+                        "requested_term": "12 months",
+                    }
+                )
+            },
             files=[
                 (
                     "template_file",
@@ -464,6 +702,10 @@ class Case6BRouteTests(unittest.TestCase):
         self.assertTrue(payload["template"]["confirmed"])
         self.assertIn("defaults", payload["template"])
         self.assertEqual("case6b", session_metadata[payload["session_id"]]["case_type"])
+        self.assertEqual(
+            "12 months",
+            session_store[payload["session_id"]][0].form_entries["requested_term"],
+        )
 
     def test_unknown_template_requires_preflight_confirmation(self):
         template_stream = io.BytesIO()

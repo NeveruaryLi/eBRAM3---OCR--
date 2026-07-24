@@ -169,6 +169,21 @@ def main() -> int:
         args.output_dir.mkdir(parents=True, exist_ok=True)
         output_path = args.output_dir / "case6b-v1.1-customer-sample.docx"
         output_path.write_bytes(report.content)
+        pdf_ready = False
+        if result["pdf_ready"]:
+            pdf_report = client.post(
+                "/pdf/session/report",
+                data={
+                    "session_id": session_id,
+                    "party": "协议草案",
+                    "output_format": "pdf",
+                },
+            )
+            pdf_report.raise_for_status()
+            pdf_ready = pdf_report.content.startswith(b"%PDF-")
+            (args.output_dir / "case6b-v1.1-customer-sample.pdf").write_bytes(
+                pdf_report.content
+            )
         document = Document(io.BytesIO(report.content))
         text = "\n".join(paragraph.text for paragraph in document.paragraphs)
         text += "\n" + "\n".join(
@@ -181,6 +196,19 @@ def main() -> int:
             "provider_cr": "2897654" in text,
             "client_cr": "3234567" in text,
             "monthly_total": "68,000" in text,
+            "zero_signing_and_onboarding": text.count("HKD 0") >= 2,
+            "optional_services": all(
+                value in text
+                for value in (
+                    "On-site Support",
+                    "Asset Inventory",
+                )
+            ),
+            "optional_prices": all(
+                value in text
+                for value in ("900 per hour", "8,000 per run")
+            ),
+            "ten_service_rows": text.count("(Price:") == 10,
             "term_12_months": "12 months" in text or "one year" in text.lower(),
             "termination_30": "30 days" in text,
             "return_10": "10 days" in text,
@@ -191,6 +219,7 @@ def main() -> int:
                     "ClientCo Limited",
                 )
             ),
+            "pdf_download": pdf_ready,
         }
         print(
             json.dumps(

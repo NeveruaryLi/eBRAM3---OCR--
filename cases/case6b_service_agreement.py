@@ -787,6 +787,21 @@ def _apply_service_agreement_rewrites(
         for field_id, definition in definitions.items()
         if definition.get("semantic_key") and field_id in fields_by_id
     }
+    term_value = str(semantic.get("agreement_term", {}).get("value", "")).strip()
+    term_definition = next(
+        (
+            definition
+            for definition in manifest["fields"]
+            if definition.get("semantic_key") == "agreement_term"
+        ),
+        None,
+    )
+    if term_value and term_definition:
+        paragraph, _ = _paragraph_for_locator(document, term_definition["locator"])
+        paragraph.text = (
+            "This Agreement will commence on the Effective Date and will remain "
+            f"in force for {term_value} from the Effective Date."
+        )
     included_amounts: list[int] = []
     for field_id, definition in definitions.items():
         if definition.get("field_kind") != "repeatable_price":
@@ -816,21 +831,6 @@ def _apply_service_agreement_rewrites(
                 "Amount after receipt of the monthly service report and invoice: "
                 f"HKD {total:,} per service month.",
             )
-    term_value = str(semantic.get("agreement_term", {}).get("value", "")).strip()
-    term_definition = next(
-        (
-            definition
-            for definition in manifest["fields"]
-            if definition.get("semantic_key") == "agreement_term"
-        ),
-        None,
-    )
-    if term_value and term_definition:
-        paragraph, _ = _paragraph_for_locator(document, term_definition["locator"])
-        paragraph.text = (
-            "This Agreement will commence on the Effective Date and will remain "
-            f"in force for {term_value} from the Effective Date."
-        )
     def company_name(value: str) -> str:
         return re.sub(
             r"\s*\((?:CR\s*(?:No\.?|Number)?[:.]?\s*)?\d+\)\s*",
@@ -1056,6 +1056,29 @@ def apply_review_changes(
         conflict["resolved"] = True
         conflict["resolved_value"] = value
         conflict["source_type"] = "user_confirmed"
+        matching_definitions = [
+            definition
+            for definition in session.field_manifest["fields"]
+            if definition.get("semantic_key") == conflict.get("semantic_key")
+            and definition.get("group_key") != "services"
+            and definition.get("field_kind") not in SIGNATURE_KINDS
+        ]
+        if len(matching_definitions) == 1:
+            target = fields_by_id[matching_definitions[0]["field_id"]]
+            target.setdefault("original", deepcopy(target))
+            target.update(
+                {
+                    "status": "USER_CONFIRMED",
+                    "value": value,
+                    "evidence": [
+                        {
+                            "source": "User conflict resolution",
+                            "fact": value,
+                        }
+                    ],
+                    "source_type": "user_confirmed",
+                }
+            )
     session.review_version += 1
     session.generated_docx = None
     session.generated_pdf = None
@@ -1434,10 +1457,32 @@ def detect_fact_conflicts(sources: list[dict[str, Any]]) -> list[dict[str, Any]]
                 and not key.startswith("service_")
                 and value
             ):
-                fact["canonical_value"] = _canonical_fact_value(key, value)
+                canonical_input = value
+                raw_value = str(fact.get("raw_value", "")).strip()
+                if (
+                    re.fullmatch(r"\d+(?:\.\d+)?", value)
+                    and raw_value
+                    and re.search(r"\b(?:days?|months?|years?)\b", raw_value, re.I)
+                ):
+                    canonical_input = raw_value
+                fact["canonical_value"] = _canonical_fact_value(
+                    key, canonical_input
+                )
                 grouped.setdefault(key, []).append(fact)
     conflicts = []
     for key, facts in grouped.items():
+        if key.endswith(("_identity", "_name")):
+            organization_facts = [
+                fact
+                for fact in facts
+                if re.search(
+                    r"\b(?:limited|ltd\.?|inc\.?|llc|plc|corporation|company)\b",
+                    str(fact.get("normalized_value", "")),
+                    re.I,
+                )
+            ]
+            if organization_facts:
+                facts = organization_facts
         distinct: dict[str, list[dict[str, Any]]] = {}
         for fact in facts:
             distinct.setdefault(str(fact["canonical_value"]).casefold(), []).append(fact)
@@ -1510,6 +1555,16 @@ def _canonical_fact_value(key: str, value: str) -> str:
     net_days = re.search(r"\bnet\s*(\d+)\b", lowered)
     if net_days and key in {"invoice_payment_days", "payment_terms"}:
         return f"{int(net_days.group(1))} days"
+    if (
+        re.fullmatch(r"\d+(?:\.0+)?", lowered)
+        and key
+        in {
+            "invoice_payment_days",
+            "termination_notice",
+            "materials_return",
+        }
+    ):
+        return f"{int(float(lowered))} days"
     if re.search(r"\b(?:one|1)\s*[- ]?year\b", lowered):
         return "12 months"
     duration = re.search(r"\b(\d+)\s*[- ]?(days?|months?|years?)\b", lowered)
@@ -1532,6 +1587,27 @@ def _canonical_fact_value(key: str, value: str) -> str:
     if key.endswith("_number"):
         return re.sub(r"\D", "", compact)
     return lowered
+
+
+def normalize_agent_conflicts(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    normalized = []
+    for conflict in value:
+        if not isinstance(conflict, dict):
+            continue
+        candidates = conflict.get("candidates")
+        if not isinstance(candidates, list) or len(candidates) < 2:
+            continue
+        normalized.append(
+            {
+                **conflict,
+                "conflict_id": conflict.get("conflict_id")
+                or f"agent-{uuid.uuid4().hex[:12]}",
+                "resolved": bool(conflict.get("resolved", False)),
+            }
+        )
+    return normalized
 
 
 def _validate_agent_fields(
@@ -1570,6 +1646,11 @@ def _validate_agent_fields(
                 item["value"] = ""
                 if item["status"] != "NEEDS_CONFIRMATION":
                     item["evidence"] = []
+            item["source_type"] = (
+                "template_default"
+                if definition.get("field_kind") in SIGNATURE_KINDS
+                else "evidence"
+            )
     return values
 
 
@@ -1664,6 +1745,277 @@ def _apply_profile_policies(session: Case6BSession) -> None:
             )
 
 
+def _fact_evidence(fact: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "source": fact.get("source") or "Uploaded material",
+        "locator": fact.get("locator"),
+        "fact": fact.get("raw_value") or fact.get("normalized_value") or "",
+    }
+
+
+def _fact_index(session: Case6BSession) -> dict[str, list[dict[str, Any]]]:
+    indexed: dict[str, list[dict[str, Any]]] = {}
+    for source in (session.full_summary or {}).get("sources", []):
+        for fact in source.get("facts", []):
+            if not isinstance(fact, dict):
+                continue
+            semantic_key = str(fact.get("semantic_key", "")).strip()
+            value = str(
+                fact.get("normalized_value") or fact.get("raw_value") or ""
+            ).strip()
+            if not semantic_key or not value:
+                continue
+            normalized = {
+                **fact,
+                "source": fact.get("source") or source.get("filename"),
+                "normalized_value": value,
+            }
+            indexed.setdefault(semantic_key, []).append(normalized)
+    return indexed
+
+
+def _first_fact(
+    indexed: dict[str, list[dict[str, Any]]],
+    keys: list[str],
+    *,
+    organization_only: bool = False,
+) -> dict[str, Any] | None:
+    candidates = [
+        fact
+        for key in keys
+        for fact in indexed.get(key, [])
+        if str(fact.get("normalized_value", "")).strip()
+    ]
+    if organization_only:
+        organizations = [
+            fact
+            for fact in candidates
+            if re.search(
+                r"\b(?:limited|ltd\.?|inc\.?|llc|plc|corporation|company)\b",
+                str(fact.get("normalized_value", "")),
+                re.I,
+            )
+        ]
+        if organizations:
+            candidates = organizations
+    return candidates[0] if candidates else None
+
+
+def _format_identity_with_cr(name: str, cr_number: str) -> str:
+    cleaned_name = re.sub(
+        r"\s*\((?:CR\s*(?:No\.?|Number)?[:.]?\s*)?\d+\)\s*",
+        "",
+        name,
+        flags=re.I,
+    ).strip()
+    digits = re.sub(r"\D", "", cr_number)
+    if cleaned_name and digits:
+        return f"{cleaned_name} (CR No.: {digits})"
+    return cleaned_name or cr_number.strip()
+
+
+def _zero_payment_value(fact: dict[str, Any] | None) -> str | None:
+    if not fact:
+        return None
+    value = str(fact.get("normalized_value") or fact.get("raw_value") or "")
+    money = _money_number(value)
+    if money == 0 or re.fullmatch(r"\s*0(?:\.0+)?\s*", value):
+        return "HKD 0"
+    return None
+
+
+def _format_money_fact(
+    fact: dict[str, Any] | None,
+    billing_basis: str | None = None,
+) -> str | None:
+    if not fact:
+        return None
+    value = str(fact.get("normalized_value") or fact.get("raw_value") or "").strip()
+    amount = _money_number(value)
+    if amount is None:
+        plain_number = re.fullmatch(r"\s*([\d,]+(?:\.\d+)?)\s*", value)
+        if plain_number:
+            amount = round(float(plain_number.group(1).replace(",", "")))
+    if amount is None:
+        return None
+    basis = billing_basis
+    lowered = value.casefold()
+    if not basis:
+        if re.search(r"(?:/|\bper\s+)h(?:ou)?r\b|\bper\s+hour\b", lowered):
+            basis = "per hour"
+        elif re.search(r"\bper\s+run\b", lowered):
+            basis = "per run"
+        elif re.search(r"\bper\s+month\b|\bmonthly\b", lowered):
+            basis = "per month"
+    formatted = f"HKD {amount:,}" + (f" {basis}" if basis else "")
+    minimum = re.search(r"(?:min(?:imum)?\.?\s*)(\d+)\s*h(?:ou)?rs?", value, re.I)
+    if minimum:
+        formatted += f" (minimum {minimum.group(1)} hours)"
+    return formatted
+
+
+def _set_evidence_field(
+    field: dict[str, Any],
+    value: str,
+    facts: list[dict[str, Any]],
+    *,
+    service_action: str | None = None,
+) -> None:
+    if not value.strip():
+        return
+    field.update(
+        {
+            "status": "FILLED",
+            "value": value.strip(),
+            "evidence": [_fact_evidence(fact) for fact in facts if fact],
+            "source_type": "evidence",
+        }
+    )
+    if service_action:
+        field["service_action"] = service_action
+
+
+def _apply_profile_evidence_enrichment(session: Case6BSession) -> None:
+    """Deterministically map structured evidence into a recognized template profile.
+
+    Agent L still interprets the template and facts. This layer only fills profile
+    fields for which Agent A already supplied an explicit semantic fact and keeps
+    the original evidence attached, so model variation cannot silently omit facts.
+    """
+    if session.field_manifest.get("profile_id") != "service_agreement_v1":
+        return
+    profile = _load_service_agreement_profile()
+    indexed = _fact_index(session)
+    definitions = {
+        item["field_id"]: item for item in session.field_manifest.get("fields", [])
+    }
+    fields_by_id = {item["field_id"]: item for item in session.fields}
+    by_semantic = {
+        definition.get("semantic_key"): fields_by_id[field_id]
+        for field_id, definition in definitions.items()
+        if definition.get("semantic_key") and field_id in fields_by_id
+    }
+    mappings = profile.get("evidence_mappings", {})
+
+    for role in ("provider", "client"):
+        name_keys = mappings.get(f"{role}_identity", [f"{role}_identity"])
+        cr_keys = mappings.get(f"{role}_cr_number", [f"{role}_cr_number"])
+        name_fact = _first_fact(indexed, name_keys, organization_only=True)
+        cr_fact = _first_fact(indexed, cr_keys)
+        target = by_semantic.get(f"{role}_identity")
+        if target and name_fact:
+            name = str(name_fact["normalized_value"])
+            cr_number = str(cr_fact["normalized_value"]) if cr_fact else ""
+            _set_evidence_field(
+                target,
+                _format_identity_with_cr(name, cr_number),
+                [name_fact, cr_fact] if cr_fact else [name_fact],
+            )
+
+    for semantic_key in (
+        "provider_address",
+        "client_address",
+        "invoice_payment_days",
+        "agreement_term",
+    ):
+        target = by_semantic.get(semantic_key)
+        fact = _first_fact(
+            indexed, mappings.get(semantic_key, [semantic_key])
+        )
+        if not target or not fact:
+            continue
+        value = str(fact["normalized_value"])
+        if semantic_key == "invoice_payment_days":
+            days = re.search(r"\b(\d+)\b", value)
+            if days:
+                value = days.group(1)
+        elif semantic_key == "agreement_term":
+            raw_value = str(fact.get("raw_value", "")).strip()
+            canonical_input = (
+                raw_value
+                if re.fullmatch(r"\d+(?:\.\d+)?", value)
+                and re.search(r"\b(?:days?|months?|years?)\b", raw_value, re.I)
+                else value
+            )
+            value = _canonical_fact_value(semantic_key, canonical_input)
+        _set_evidence_field(target, value, [fact])
+
+    for semantic_key in ("signing_payment", "onboarding_payment"):
+        target = by_semantic.get(semantic_key)
+        fact = _first_fact(
+            indexed, mappings.get(semantic_key, [semantic_key])
+        )
+        value = _zero_payment_value(fact)
+        if target and fact and value:
+            _set_evidence_field(target, value, [fact])
+
+    for group_text, service_config in profile.get(
+        "service_fact_prefixes", {}
+    ).items():
+        group_index = int(group_text)
+        group_definitions = [
+            definition
+            for definition in definitions.values()
+            if definition.get("group_key") == "services"
+            and definition.get("group_index") == group_index
+        ]
+        if len(group_definitions) != 2:
+            continue
+        prefix = service_config["prefix"]
+        action = service_config["action"]
+        name_fact = _first_fact(indexed, [f"{prefix}_name"])
+        scope_fact = _first_fact(indexed, [f"{prefix}_scope"])
+        notes_fact = _first_fact(indexed, [f"{prefix}_notes"])
+        price_keys = [
+            f"{prefix}_monthly_value",
+            f"{prefix}_price",
+            f"{prefix}_fee",
+            f"{prefix}_notes",
+        ]
+        if service_config.get("price_from") == "notes":
+            price_keys = [f"{prefix}_notes", *price_keys[:-1]]
+        price_fact = _first_fact(indexed, price_keys)
+        if not name_fact:
+            continue
+        name = str(name_fact["normalized_value"]).strip()
+        scope = (
+            str(scope_fact["normalized_value"]).strip() if scope_fact else ""
+        )
+        if action == "optional" and not name.casefold().startswith("optional"):
+            name = f"Optional {name}"
+        description = f"{name} — {scope}" if scope else name
+        price = _format_money_fact(
+            price_fact,
+            service_config.get("billing_basis"),
+        )
+        name_definition = next(
+            item
+            for item in group_definitions
+            if item.get("field_kind") == "repeatable_service"
+        )
+        price_definition = next(
+            item
+            for item in group_definitions
+            if item.get("field_kind") == "repeatable_price"
+        )
+        _set_evidence_field(
+            fields_by_id[name_definition["field_id"]],
+            description,
+            [name_fact, scope_fact] if scope_fact else [name_fact],
+            service_action=action,
+        )
+        if price and price_fact:
+            price_evidence = [price_fact]
+            if notes_fact and notes_fact is not price_fact:
+                price_evidence.append(notes_fact)
+            _set_evidence_field(
+                fields_by_id[price_definition["field_id"]],
+                price,
+                price_evidence,
+                service_action=action,
+            )
+
+
 async def _run_agent_l(session: Case6BSession) -> None:
     if not AGENT_L_API_KEY:
         raise RuntimeError("Case 6B 尚未配置 AGENT_L_API_KEY")
@@ -1718,12 +2070,11 @@ async def _run_agent_l(session: Case6BSession) -> None:
             session.fields = _validate_agent_fields(
                 merged_manifest, parsed_fill, filled=True
             )
-            agent_conflicts = (
+            agent_conflicts = normalize_agent_conflicts(
                 parsed_fill.get("conflicts")
-                if isinstance(parsed_fill.get("conflicts"), list)
-                else []
             )
             _apply_profile_policies(session)
+            _apply_profile_evidence_enrichment(session)
             existing = {
                 conflict.get("conflict_id") or json.dumps(conflict, sort_keys=True)
                 for conflict in session.conflicts
