@@ -6,6 +6,7 @@ const state = {
   template: null,
   materials: [],
   sessionId: null,
+  templatePreflight: null,
   review: null,
   busy: false,
   history: [],
@@ -27,6 +28,11 @@ const els = {
   downloadPdf: $('downloadPdfBtn'), reset: $('resetTaskBtn'), newTask: $('newTaskBtn'),
   history: $('historyList'), sidebar: $('sidebar'), sidebarToggle: $('sidebarToggle'),
   sidebarOverlay: $('sidebarOverlay'), mobileTheme: $('mobileThemeBtn'),
+  formEntries: $('formEntriesInput'), templatePreflight: $('templatePreflight'),
+  templatePreflightSummary: $('templatePreflightSummary'),
+  templatePreflightDetails: $('templatePreflightDetails'),
+  templateConfirm: $('templateConfirmBtn'), conflictPanel: $('conflictPanel'),
+  conflictList: $('conflictList'),
 };
 
 function localId() { return `c6b_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`; }
@@ -95,7 +101,7 @@ function setTemplate(file) {
   state.template = file; els.templateState.textContent = file.name; renderSelectedFiles(); updateStartButton();
 }
 function setMaterials(files) {
-  const accepted = ['pdf', 'png', 'jpg', 'jpeg', 'jfif', 'xlsx'];
+  const accepted = ['pdf', 'png', 'jpg', 'jpeg', 'jfif', 'xlsx', 'docx', 'csv'];
   const values = [...files].filter(file => accepted.includes(file.name.split('.').pop().toLowerCase()));
   if (values.length > 20) { toast('最多选择 20 份事实材料'); return; }
   state.materials = values; els.materialsState.textContent = `${values.length} 份`; renderSelectedFiles(); updateStartButton();
@@ -198,17 +204,66 @@ async function runAnalysis(url, options) {
     els.retry.hidden = false; throw error;
   }
 }
+function renderTemplatePreflight(preflight) {
+  state.templatePreflight = preflight;
+  els.templatePreflight.hidden = false;
+  const mode = preflight.recognition_mode === 'profile' ? `已匹配模板档案：${preflight.profile_name || preflight.profile_id}` : '检测到未知常规模板';
+  els.templatePreflightSummary.textContent = `${mode}；共 ${preflight.field_count} 个字段。${preflight.confirmed ? '映射已确认。' : '请确认字段、重复区块与签署区后继续。'}`;
+  els.templatePreflightDetails.innerHTML = '';
+  const details = [
+    ['占位字段', `${preflight.field_count} 个`],
+    ['重复区块', `${(preflight.repeat_blocks || []).length} 个`],
+    ['签署字段', `${(preflight.signature_sections || []).length} 个`],
+    ['模板默认值', Object.keys(preflight.defaults || {}).length ? Object.entries(preflight.defaults).map(([key, value]) => `${key}: ${value}`).join('；') : '无'],
+  ];
+  details.forEach(([label, value]) => {
+    const item = document.createElement('div'); const strong = document.createElement('strong'); const span = document.createElement('span');
+    strong.textContent = label; span.textContent = value; item.append(strong, span); els.templatePreflightDetails.appendChild(item);
+  });
+  els.templateConfirm.hidden = preflight.confirmed;
+}
+async function continueAnalysis() {
+  const analyze = new FormData(); analyze.append('session_id', state.sessionId);
+  beginProgress();
+  await runAnalysis('/pdf/session/analyze', { method: 'POST', body: analyze });
+}
 async function startWorkflow() {
   if (state.busy || !state.template || !state.materials.length) return;
   setBusy(true); beginProgress(); els.progressMessage.textContent = '正在校验并上传文件...';
   try {
     const body = new FormData(); body.append('template_file', state.template, state.template.name);
     state.materials.forEach(file => body.append('material_files', file, file.name));
+    if (els.formEntries.value.trim()) {
+      JSON.parse(els.formEntries.value);
+      body.append('form_entries', els.formEntries.value.trim());
+    }
     const uploaded = await requestJson('/case6b/session/upload', { method: 'POST', body });
     state.sessionId = uploaded.session_id; renderMaterialStatus(uploaded.materials);
     updateHistory({ title: uploaded.template.filename, sessionId: state.sessionId });
-    const analyze = new FormData(); analyze.append('session_id', state.sessionId);
-    await runAnalysis('/pdf/session/analyze', { method: 'POST', body: analyze });
+    renderTemplatePreflight(uploaded.template);
+    if (uploaded.template.confirmed) await continueAnalysis();
+    else {
+      els.progress.hidden = true; els.status.textContent = '等待模板确认';
+    }
+  } catch (error) { showError(error.message); } finally { setBusy(false); }
+}
+async function confirmTemplate() {
+  if (!state.sessionId || !state.templatePreflight || state.busy) return;
+  setBusy(true);
+  try {
+    state.templatePreflight = await requestJson(`/case6b/session/${encodeURIComponent(state.sessionId)}/template`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        version: state.templatePreflight.version,
+        confirmed: true,
+        field_updates: [],
+        repeat_blocks: state.templatePreflight.repeat_blocks || [],
+        signature_sections: state.templatePreflight.signature_sections || [],
+        allowed_rewrites: state.templatePreflight.allowed_rewrites || [],
+      }),
+    });
+    renderTemplatePreflight(state.templatePreflight);
+    await continueAnalysis();
   } catch (error) { showError(error.message); } finally { setBusy(false); }
 }
 async function retryFailed(materialId = null) {
@@ -232,7 +287,7 @@ function fieldGroup(field) {
   return '其他条款';
 }
 function statusLabel(status) {
-  return ({ FILLED: '证据已填', USER_CONFIRMED: '人工确认', NEEDS_CONFIRMATION: '待确认', REMOVE: '不使用', LEAVE_BLANK: '签署时填写' })[status] || status;
+  return ({ FILLED: '证据已填', USER_CONFIRMED: '人工确认', NEEDS_CONFIRMATION: '待确认', REMOVE: '不使用', KEEP_BLANK: '保留空白', LEAVE_BLANK: '签署时填写' })[status] || status;
 }
 function evidenceText(field) {
   const evidence = Array.isArray(field.evidence) ? field.evidence : [];
@@ -249,26 +304,26 @@ function makeScalarField(field) {
   const evidence = document.createElement('div'); evidence.className = 'c6b-field-evidence'; evidence.textContent = evidenceText(field);
   valueWrap.append(input, evidence);
   const status = document.createElement('span'); status.className = `c6b-field-status ${field.status === 'NEEDS_CONFIRMATION' ? 'pending' : ''} ${!field.editable ? 'locked' : ''}`; status.textContent = statusLabel(field.status);
+  status.dataset.sourceType = field.source_type || 'evidence';
+  if (field.source_type === 'template_default') status.textContent += ' · 模板默认值';
   row.append(label, valueWrap, status); return row;
 }
 function makeServiceRow(groupIndex, fields) {
   const nameField = fields.find(field => field.field_kind === 'repeatable_service');
   const priceField = fields.find(field => field.field_kind === 'repeatable_price');
   const row = document.createElement('div'); row.className = 'c6b-field-row'; row.dataset.groupIndex = groupIndex;
-  row.dataset.action = fields.every(field => field.status === 'REMOVE') ? 'remove' : 'keep';
+  row.dataset.action = fields.every(field => field.status === 'REMOVE') ? 'remove' : (nameField?.service_action || (fields.every(field => field.status === 'KEEP_BLANK') ? 'blank' : 'included'));
   const label = document.createElement('div'); label.className = 'c6b-field-label'; label.innerHTML = `<strong>服务 ${groupIndex}</strong><small>名称与价格成对处理</small>`;
   const controls = document.createElement('div'); controls.className = 'c6b-service-controls';
   const name = document.createElement('input'); name.className = 'c6b-field-input'; name.value = nameField?.value || ''; name.placeholder = '服务名称'; name.dataset.role = 'name';
   const price = document.createElement('input'); price.className = 'c6b-field-input'; price.value = priceField?.value || ''; price.placeholder = '价格及计费单位'; price.dataset.role = 'price';
-  const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = row.dataset.action === 'remove' ? '恢复' : '移除';
-  remove.classList.toggle('remove-active', row.dataset.action === 'remove');
-  remove.addEventListener('click', () => {
-    row.dataset.action = row.dataset.action === 'remove' ? 'keep' : 'remove';
-    remove.textContent = row.dataset.action === 'remove' ? '恢复' : '移除'; remove.classList.toggle('remove-active', row.dataset.action === 'remove');
-    name.disabled = price.disabled = row.dataset.action === 'remove';
+  const action = document.createElement('select'); action.dataset.role = 'action';
+  [['included','正式服务'],['optional','可选服务'],['blank','保留空白'],['remove','移除']].forEach(([value, labelText]) => {
+    const option = document.createElement('option'); option.value = value; option.textContent = labelText; option.selected = value === row.dataset.action; action.appendChild(option);
   });
-  name.disabled = price.disabled = row.dataset.action === 'remove'; controls.append(name, price, remove);
-  const status = document.createElement('span'); status.className = 'c6b-field-status'; status.textContent = row.dataset.action === 'remove' ? '不使用' : '服务行';
+  const sync = () => { row.dataset.action = action.value; name.disabled = price.disabled = ['blank','remove'].includes(action.value); };
+  action.addEventListener('change', sync); sync(); controls.append(name, price, action);
+  const status = document.createElement('span'); status.className = 'c6b-field-status'; status.textContent = '服务行';
   row.append(label, controls, status); return row;
 }
 function renderReview() {
@@ -276,6 +331,7 @@ function renderReview() {
   els.progress.hidden = false; els.error.hidden = true; els.reviewPanel.hidden = false; els.status.textContent = '等待审阅'; setStage('review');
   els.fieldCount.textContent = `${state.review.fields.length} 个字段`;
   els.unresolvedCount.textContent = `${state.review.unresolved_count} 个待确认`;
+  renderConflicts(state.review.conflicts || []);
   const groups = new Map();
   state.review.fields.forEach(field => { const group = fieldGroup(field); if (!groups.has(group)) groups.set(group, []); groups.get(group).push(field); });
   els.reviewGroups.innerHTML = '';
@@ -289,6 +345,18 @@ function renderReview() {
     els.reviewGroups.appendChild(section);
   });
 }
+function renderConflicts(conflicts) {
+  els.conflictList.innerHTML = '';
+  els.conflictPanel.hidden = conflicts.length === 0;
+  conflicts.forEach(conflict => {
+    const row = document.createElement('label'); row.className = 'c6b-conflict-row'; row.dataset.conflictId = conflict.conflict_id;
+    const title = document.createElement('strong'); title.textContent = conflict.semantic_key || '资料冲突';
+    const select = document.createElement('select'); select.dataset.role = 'conflict';
+    const placeholder = document.createElement('option'); placeholder.value = ''; placeholder.textContent = '请选择经核对的值'; select.appendChild(placeholder);
+    (conflict.candidates || []).forEach(candidate => { const option = document.createElement('option'); option.value = candidate.value; option.textContent = candidate.value; option.selected = conflict.resolved_value === candidate.value; select.appendChild(option); });
+    row.append(title, select); els.conflictList.appendChild(row);
+  });
+}
 function collectReview() {
   const field_updates = [...els.reviewGroups.querySelectorAll('[data-field-id]')].filter(row => !row.querySelector('textarea').disabled).map(row => ({
     field_id: row.dataset.fieldId, value: row.querySelector('textarea').value.trim(),
@@ -297,7 +365,10 @@ function collectReview() {
     group_index: Number(row.dataset.groupIndex), action: row.dataset.action,
     name: row.querySelector('[data-role="name"]').value.trim(), price: row.querySelector('[data-role="price"]').value.trim(),
   }));
-  return { version: state.review.version, field_updates, service_rows };
+  const conflict_resolutions = [...els.conflictList.querySelectorAll('[data-conflict-id]')].filter(row => row.querySelector('select').value).map(row => ({
+    conflict_id: row.dataset.conflictId, value: row.querySelector('select').value,
+  }));
+  return { version: state.review.version, field_updates, service_rows, conflict_resolutions };
 }
 async function saveReview() {
   if (!state.review || state.busy) return false;
@@ -341,10 +412,11 @@ async function resetCurrent(confirmFirst = true) {
   clearView(true);
 }
 function clearView(updateCurrent) {
-  state.template = null; state.materials = []; state.sessionId = null; state.review = null;
+  state.template = null; state.materials = []; state.sessionId = null; state.review = null; state.templatePreflight = null;
   els.templateInput.value = ''; els.materialsInput.value = ''; els.templateState.textContent = '未选择'; els.materialsState.textContent = '未选择';
   els.selectedFiles.innerHTML = ''; els.materialStatus.innerHTML = ''; els.idle.hidden = false; els.progress.hidden = true; els.error.hidden = true;
   els.reviewPanel.hidden = true; els.downloadPanel.hidden = true; els.retry.hidden = true; els.status.textContent = '等待文件'; setStage('upload'); updateStartButton();
+  els.templatePreflight.hidden = true; els.conflictPanel.hidden = true; els.formEntries.value = '';
   if (updateCurrent && currentHistory()) updateHistory({ title: '新建草案', sessionId: null, expired: false });
 }
 function newTask() { if (state.busy) return; state.currentLocalId = null; ensureHistory(); clearView(false); closeSidebar(); }
@@ -354,6 +426,7 @@ bindDropzone(els.templateDropzone, els.templateInput, files => setTemplate(files
 bindDropzone(els.materialsDropzone, els.materialsInput, files => setMaterials(files));
 els.start.addEventListener('click', startWorkflow); els.retry.addEventListener('click', () => retryFailed());
 els.saveReview.addEventListener('click', saveReview); els.finalize.addEventListener('click', finalizeDraft);
+els.templateConfirm.addEventListener('click', confirmTemplate);
 els.downloadDocx.addEventListener('click', () => download('docx')); els.downloadPdf.addEventListener('click', () => download('pdf'));
 els.reset.addEventListener('click', () => resetCurrent(true)); els.newTask.addEventListener('click', newTask);
 els.sidebarToggle.addEventListener('click', () => { els.sidebar.classList.add('open'); els.sidebarOverlay.classList.add('open'); });

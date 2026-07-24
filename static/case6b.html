@@ -80,15 +80,19 @@
         </label>
 
         <label class="c6b-dropzone c6b-material-zone" id="materialsDropzone" for="materialsInput">
-          <input id="materialsInput" name="material_files" type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.jfif,.xlsx" hidden />
+          <input id="materialsInput" name="material_files" type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.jfif,.xlsx,.docx,.csv" hidden />
           <span class="c6b-file-mark">FILES</span>
-          <div><strong>事实材料</strong><small>PDF、图片/JFIF 或 XLSX，最多 20 份</small></div>
+          <div><strong>事实材料</strong><small>PDF、图片/JFIF、XLSX、DOCX 或 CSV，最多 20 份</small></div>
           <span class="c6b-zone-state" id="materialsState">未选择</span>
         </label>
 
         <div class="c6b-file-list" id="selectedFiles"></div>
+        <label class="c6b-form-entry">
+          <span>结构化表单信息（可选 JSON）</span>
+          <textarea id="formEntriesInput" rows="3" placeholder='{"contact_name":"...","reference_no":"..."}'></textarea>
+        </label>
         <div class="c6b-upload-note">
-          PDF 与图片将通过 PaddleOCR 识别；XLSX 在本地读取单元格，不会执行公式或外部链接。
+          PDF 与图片将通过 PaddleOCR 识别；XLSX、DOCX 与 CSV 在本地安全读取，不会执行公式或外部链接。
         </div>
         <button class="c6b-primary-btn" id="startBtn" type="button" disabled>
           开始提取并生成字段建议
@@ -118,6 +122,16 @@
       </section>
     </div>
 
+    <section class="c6b-preflight" id="templatePreflight" hidden aria-labelledby="templatePreflightTitle">
+      <div>
+        <span>TEMPLATE PREFLIGHT</span>
+        <h2 id="templatePreflightTitle">模板结构预检</h2>
+        <p id="templatePreflightSummary"></p>
+      </div>
+      <div class="c6b-preflight-grid" id="templatePreflightDetails"></div>
+      <button class="c6b-primary-btn" id="templateConfirmBtn" type="button">确认模板映射并继续</button>
+    </section>
+
     <section class="c6b-review" id="reviewPanel" hidden aria-labelledby="reviewTitle">
       <div class="c6b-review-head">
         <div>
@@ -129,6 +143,11 @@
           <span id="fieldCount">0 个字段</span>
           <span class="warning" id="unresolvedCount">0 个待确认</span>
         </div>
+      </div>
+      <div class="c6b-conflicts" id="conflictPanel" hidden>
+        <h3>材料冲突</h3>
+        <p>请选择经核对后的值；未解决冲突将阻止生成草案。</p>
+        <div id="conflictList"></div>
       </div>
       <div class="c6b-review-groups" id="reviewGroups"></div>
       <div class="c6b-review-actions">
