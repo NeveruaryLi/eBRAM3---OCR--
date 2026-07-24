@@ -108,7 +108,24 @@ class Case6BAgentBuilderTests(unittest.TestCase):
         )
         self.assertEqual(
             components[6]["multiModalLlmInput"],
-            {"fileMode": "DISABLED", "fileSupportTypes": None},
+            {"fileMode": "SYSTEM", "fileSupportTypes": ["Document"]},
+        )
+        self.assertEqual(generated["multiModal"]["multiModalInput"]["fileLimit"], 2)
+        self.assertIn(
+            "case6b_template_context.md",
+            next(
+                message
+                for message in components[4]["messages"]
+                if message["type"] == "Role"
+            )["text"],
+        )
+        self.assertIn(
+            "case6b_field_fill_context.md",
+            next(
+                message
+                for message in components[6]["messages"]
+                if message["type"] == "Role"
+            )["text"],
         )
 
     def test_case6b_fixtures_cover_template_and_all_nine_materials(self):
