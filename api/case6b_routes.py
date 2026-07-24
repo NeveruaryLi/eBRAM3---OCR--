@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 from uuid import uuid4
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -28,6 +28,7 @@ from cases.case6b_service_agreement import (
     Case6BDraftingHandler,
     Case6BSession,
     apply_review_changes,
+    build_template_preflight,
     convert_docx_to_pdf,
     extract_template_manifest,
     render_draft_docx,
@@ -46,15 +47,32 @@ class FieldUpdate(BaseModel):
 
 class ServiceRowUpdate(BaseModel):
     group_index: int = Field(ge=1, le=100)
-    action: str = Field(pattern="^(keep|remove)$")
+    action: str = Field(pattern="^(included|optional|blank|remove|keep)$")
     name: str = Field(default="", max_length=1000)
     price: str = Field(default="", max_length=1000)
+
+
+class ConflictResolution(BaseModel):
+    conflict_id: str = Field(min_length=1, max_length=120)
+    value: str = Field(min_length=1, max_length=4000)
 
 
 class ReviewUpdate(BaseModel):
     version: int = Field(ge=1)
     field_updates: list[FieldUpdate] = Field(default_factory=list, max_length=200)
     service_rows: list[ServiceRowUpdate] = Field(default_factory=list, max_length=100)
+    conflict_resolutions: list[ConflictResolution] = Field(
+        default_factory=list, max_length=100
+    )
+
+
+class TemplateUpdate(BaseModel):
+    version: int = Field(ge=1)
+    confirmed: bool
+    field_updates: list[dict[str, Any]] = Field(default_factory=list, max_length=200)
+    repeat_blocks: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
+    signature_sections: list[str] = Field(default_factory=list, max_length=50)
+    allowed_rewrites: list[str] = Field(default_factory=list, max_length=50)
 
 
 class FinalizeRequest(BaseModel):
@@ -87,6 +105,7 @@ def _sse(data: dict[str, Any]) -> str:
 async def upload_case6b(
     template_file: UploadFile = File(...),
     material_files: list[UploadFile] = File(...),
+    form_entries: str | None = Form(default=None),
 ):
     if not 1 <= len(material_files) <= MAX_MATERIALS:
         raise _error(400, "INVALID_MATERIAL_COUNT", "事实材料数量必须为 1–20 份")
@@ -115,8 +134,19 @@ async def upload_case6b(
             raise _error(400, "INVALID_MATERIAL", str(exc)) from exc
     if total_bytes > MAX_TOTAL_BYTES:
         raise _error(413, "UPLOAD_TOO_LARGE", "模板和材料总大小不能超过 100 MB")
+    parsed_form_entries: dict[str, Any] = {}
+    if form_entries:
+        try:
+            value = json.loads(form_entries)
+        except json.JSONDecodeError as exc:
+            raise _error(400, "INVALID_FORM_ENTRIES", "form_entries 必须是 JSON Object") from exc
+        if not isinstance(value, dict):
+            raise _error(400, "INVALID_FORM_ENTRIES", "form_entries 必须是 JSON Object")
+        if len(json.dumps(value, ensure_ascii=False)) > 50_000:
+            raise _error(413, "FORM_ENTRIES_TOO_LARGE", "结构化表单信息不能超过 50 KB")
+        parsed_form_entries = value
     ocr_units = sum(
-        material.units for material in materials if material.file_type != "xlsx"
+        material.units for material in materials if material.file_type in {"pdf", "image"}
     )
     if ocr_units > MAX_OCR_UNITS:
         raise _error(400, "TOO_MANY_OCR_UNITS", "PDF 页与图片合计最多支持 60 页")
@@ -126,6 +156,7 @@ async def upload_case6b(
         template=template,
         materials=materials,
         field_manifest=manifest,
+        form_entries=parsed_form_entries,
     )
     session_store[session_id] = [session]
     session_results_store.pop(session_id, None)
@@ -140,6 +171,7 @@ async def upload_case6b(
         "template": {
             "filename": template.filename,
             "language": template.language,
+            **build_template_preflight(manifest),
         },
         "placeholder_count": len(manifest["fields"]),
         "materials": [
@@ -154,6 +186,47 @@ async def upload_case6b(
         ],
         "expires_in": SESSION_TTL_SECONDS,
     }
+
+
+@router.get("/session/{session_id}/template")
+async def get_case6b_template(session_id: str):
+    session = _session(session_id)
+    return build_template_preflight(session.field_manifest, session.template_version)
+
+
+@router.patch("/session/{session_id}/template")
+async def update_case6b_template(session_id: str, body: TemplateUpdate):
+    session = _session(session_id)
+    if session.lock.locked():
+        raise _error(409, "SESSION_BUSY", "当前草案正在处理中，请稍候")
+    if body.version != session.template_version:
+        raise _error(409, "STALE_TEMPLATE", "模板预检内容已更新，请刷新后再提交")
+    if session.fields:
+        raise _error(409, "TEMPLATE_ALREADY_ANALYZED", "材料分析开始后不能修改模板映射")
+    known_ids = {field["field_id"] for field in session.field_manifest["fields"]}
+    for update in body.field_updates:
+        field_id = str(update.get("field_id", ""))
+        if field_id not in known_ids:
+            raise _error(400, "INVALID_TEMPLATE_MAPPING", f"未知模板字段：{field_id}")
+        target = next(
+            field
+            for field in session.field_manifest["fields"]
+            if field["field_id"] == field_id
+        )
+        for key in ("semantic_key", "label", "required"):
+            if key in update:
+                target[key] = update[key]
+    if body.repeat_blocks:
+        session.field_manifest["repeat_blocks"] = body.repeat_blocks
+    if body.signature_sections:
+        if any(field_id not in known_ids for field_id in body.signature_sections):
+            raise _error(400, "INVALID_TEMPLATE_MAPPING", "签署区包含未知字段")
+        session.field_manifest["signature_sections"] = body.signature_sections
+    session.field_manifest["allowed_rewrites"] = body.allowed_rewrites
+    session.field_manifest["template_confirmed"] = body.confirmed
+    session.template_version += 1
+    session.updated_at = datetime.utcnow()
+    return build_template_preflight(session.field_manifest, session.template_version)
 
 
 @router.post("/session/{session_id}/retry")
@@ -227,6 +300,10 @@ async def update_case6b_review(session_id: str, body: ReviewUpdate):
                 body.version,
                 [update.model_dump() for update in body.field_updates],
                 [row.model_dump() for row in body.service_rows],
+                [
+                    resolution.model_dump()
+                    for resolution in body.conflict_resolutions
+                ],
             )
         except ValueError as exc:
             code = "STALE_REVIEW" if "已更新" in str(exc) else "INVALID_REVIEW"
@@ -242,6 +319,12 @@ async def finalize_case6b(session_id: str, body: FinalizeRequest):
     if body.version != session.review_version:
         raise _error(409, "STALE_REVIEW", "审阅内容已更新，请刷新后再生成")
     review = review_payload(session)
+    if review["unresolved_conflict_count"]:
+        raise _error(
+            409,
+            "UNRESOLVED_CONFLICTS",
+            f"仍有 {review['unresolved_conflict_count']} 项材料冲突待解决",
+        )
     if review["unresolved_count"] and not body.allow_unresolved:
         raise _error(
             409,

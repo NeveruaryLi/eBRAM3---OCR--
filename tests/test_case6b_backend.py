@@ -20,6 +20,7 @@ from cases.case6b_service_agreement import (
     extract_csv_markdown,
     extract_docx_markdown,
     extract_template_manifest,
+    detect_fact_conflicts,
     extract_xlsx_markdown,
     image_to_pdf,
     ocr_submission_filename,
@@ -48,8 +49,8 @@ class Case6BCoreTests(unittest.TestCase):
         )
         self.assertEqual("service_agreement_v1", manifest["profile_id"])
         self.assertTrue(manifest["template_confirmed"])
-        self.assertEqual("30 days", manifest["template_defaults"]["termination_notice"])
-        self.assertEqual("10 days", manifest["template_defaults"]["materials_return"])
+        self.assertEqual("30", manifest["template_defaults"]["termination_notice"])
+        self.assertEqual("10", manifest["template_defaults"]["materials_return"])
 
     def test_bracket_placeholders_are_detected_for_unknown_templates(self):
         output = io.BytesIO()
@@ -94,7 +95,7 @@ class Case6BCoreTests(unittest.TestCase):
         docx_markdown, docx_units = extract_docx_markdown(
             docx_material.content, docx_material.filename
         )
-        csv_content = b"service,price\\nHelpdesk,HKD 20000 per month\\n"
+        csv_content = b"service,price\nHelpdesk,HKD 20000 per month\n"
         csv_material = validate_material(csv_content, "pricing.csv")
         csv_markdown, csv_units = extract_csv_markdown(
             csv_material.content, csv_material.filename
@@ -103,7 +104,7 @@ class Case6BCoreTests(unittest.TestCase):
         self.assertEqual(1, docx_units)
         self.assertIn("paragraph:1", docx_markdown)
         self.assertEqual("csv", csv_material.file_type)
-        self.assertEqual(1, csv_units)
+        self.assertEqual(2, csv_units)
         self.assertIn("row:2", csv_markdown)
 
     def test_image_is_wrapped_as_single_page_pdf(self):
@@ -198,7 +199,7 @@ class Case6BCoreTests(unittest.TestCase):
         self.assertEqual("FILLED", target["status"])
         self.assertEqual(evidence, target["evidence"])
 
-    def test_docx_fill_preserves_signature_blanks_and_removes_unused_services(self):
+    def test_docx_fill_preserves_signature_blanks_and_profile_service_rows(self):
         fields = json.loads((FIXTURES / "expected_fill.json").read_text("utf-8"))[
             "fields"
         ]
@@ -213,8 +214,9 @@ class Case6BCoreTests(unittest.TestCase):
         document = Document(io.BytesIO(output))
         text = "\n".join(p.text for p in document.paragraphs)
         self.assertIn("ServiceStar Solutions Limited", text)
-        self.assertIn("[TO BE CONFIRMED]", text)
-        self.assertEqual(4, text.count("(Price:"))
+        self.assertIn("Optional On-site Support", text)
+        self.assertNotIn("[TO BE CONFIRMED]", text)
+        self.assertEqual(10, text.count("(Price:"))
         signature_text = "\n".join(
             cell.text for table in document.tables for row in table.rows for cell in row.cells
         )
@@ -243,7 +245,7 @@ class Case6BCoreTests(unittest.TestCase):
                     "group_index": 5,
                     "action": "optional",
                     "name": "Optional On-site Support",
-                    "price": "HKD 900 per hour (minimum 2 hours)",
+                    "price": "HKD 950 per hour (minimum 2 hours)",
                 },
                 {
                     "group_index": 7,
@@ -276,6 +278,141 @@ class Case6BCoreTests(unittest.TestCase):
         self.assertTrue(all(item["service_action"] == "optional" for item in row5))
         self.assertTrue(all(item["status"] == "KEEP_BLANK" for item in row7))
         self.assertTrue(all(item["source_type"] == "user_confirmed" for item in row5))
+
+    def test_conflicts_only_compare_the_same_explicit_scalar_semantics(self):
+        sources = [
+            {
+                "facts": [
+                    {
+                        "semantic_key": "provider_identity",
+                        "normalized_value": "ServiceStar Solutions Limited",
+                        "raw_value": "ServiceStar Solutions Limited",
+                        "category": "party",
+                    },
+                    {
+                        "semantic_key": "service_price",
+                        "normalized_value": "HKD 20,000 per month",
+                        "raw_value": "HKD 20,000 per month",
+                        "category": "service",
+                    },
+                    {
+                        "semantic_key": "agreement_term",
+                        "normalized_value": "12-month term",
+                        "raw_value": "12-month term",
+                        "category": "term",
+                    },
+                ]
+            },
+            {
+                "facts": [
+                    {
+                        "semantic_key": "provider_identity",
+                        "normalized_value": "ServiceStar Solutions Limited (CR No.: 2897654)",
+                        "raw_value": "ServiceStar Solutions Limited, CR 2897654",
+                        "category": "party",
+                    },
+                    {
+                        "semantic_key": "service_price",
+                        "normalized_value": "HKD 900 per hour",
+                        "raw_value": "HKD 900 per hour",
+                        "category": "service",
+                    },
+                    {
+                        "semantic_key": "agreement_term",
+                        "normalized_value": "24 months",
+                        "raw_value": "24 months",
+                        "category": "term",
+                    },
+                ]
+            },
+        ]
+        conflicts = detect_fact_conflicts(sources)
+        self.assertEqual(1, len(conflicts))
+        self.assertEqual("agreement_term", conflicts[0]["semantic_key"])
+
+    def test_customer_profile_renders_gold_structure_and_payment_total(self):
+        manifest = extract_template_manifest(TEMPLATE.read_bytes())
+        values = {
+            "p002_f02": "ServiceStar Solutions Limited (CR No.: 2897654)",
+            "p002_f03": "Unit 1201, Example Tower, Hong Kong",
+            "p002_f04": "ClientCo Limited (CR No.: 3234567)",
+            "p002_f05": "88 Client Road, Hong Kong",
+            "p006_f01": "Remote Helpdesk (8×5) — Remote incident logging, triage and support",
+            "p006_f02": "HKD 20,000 per month",
+            "p007_f01": "Endpoint Patching — Monthly operating system and security patching",
+            "p007_f02": "HKD 16,000 per month",
+            "p008_f01": "Microsoft 365 Tenant Administration — User and licence administration",
+            "p008_f02": "HKD 22,000 per month",
+            "p009_f01": "Monthly KPI Reporting — Monthly service performance report",
+            "p009_f02": "HKD 10,000 per month",
+            "p010_f01": "Optional On-site Support",
+            "p010_f02": "HKD 900 per hour (minimum 2 hours)",
+            "p011_f01": "Optional One-off Asset Inventory",
+            "p011_f02": "HKD 8,000 per run",
+            "p016_f01": "HKD 0",
+            "p016_f02": "HKD 0",
+            "p021_f01": "30",
+            "p024_f01": "12 months",
+            "p030_f01": "30",
+            "p031_f01": "10",
+        }
+        fields = []
+        for definition in manifest["fields"]:
+            field_id = definition["field_id"]
+            group = definition.get("group_index")
+            if field_id in values:
+                action = "optional" if group in {5, 6} else "included" if group else None
+                fields.append(
+                    {
+                        "field_id": field_id,
+                        "status": "FILLED",
+                        "value": values[field_id],
+                        "evidence": [{"source": "gold", "fact": values[field_id]}],
+                        "service_action": action,
+                        "source_type": "evidence",
+                    }
+                )
+            elif group in {7, 8, 9, 10}:
+                fields.append(
+                    {
+                        "field_id": field_id,
+                        "status": "KEEP_BLANK",
+                        "value": "",
+                        "evidence": [],
+                        "service_action": "blank",
+                        "source_type": "template_default",
+                    }
+                )
+            else:
+                fields.append(
+                    {
+                        "field_id": field_id,
+                        "status": "LEAVE_BLANK",
+                        "value": "",
+                        "evidence": [],
+                        "source_type": "template_default",
+                    }
+                )
+        output = render_draft_docx(
+            TEMPLATE.read_bytes(), manifest, fields, "en"
+        )
+        document = Document(io.BytesIO(output))
+        body = "\n".join(paragraph.text for paragraph in document.paragraphs)
+        signatures = "\n".join(
+            cell.text
+            for table in document.tables
+            for row in table.rows
+            for cell in row.cells
+        )
+        self.assertIn("ServiceStar Solutions Limited (CR No.: 2897654)", body)
+        self.assertIn("ClientCo Limited (CR No.: 3234567)", body)
+        self.assertIn("Optional On-site Support", body)
+        self.assertIn("HKD 68,000 per service month", body)
+        self.assertIn("12 months", body)
+        self.assertEqual(10, body.count("(Price:"))
+        self.assertIn("ServiceStar Solutions Limited", signatures)
+        self.assertIn("ClientCo Limited", signatures)
+        self.assertIn("Name:_________________________", signatures)
 
 
 class Case6BRouteTests(unittest.TestCase):
@@ -421,6 +558,12 @@ class Case6BRouteTests(unittest.TestCase):
 
     def test_finalize_requires_unresolved_confirmation_and_keeps_docx_on_pdf_failure(self):
         session_id = self._ready_session()
+        unresolved = next(
+            field
+            for field in session_store[session_id][0].fields
+            if field["field_id"] == "p016_f01"
+        )
+        unresolved.update({"status": "NEEDS_CONFIRMATION", "value": "", "evidence": []})
         blocked = self.client.post(
             f"/case6b/session/{session_id}/finalize",
             json={"version": 1, "allow_unresolved": False},

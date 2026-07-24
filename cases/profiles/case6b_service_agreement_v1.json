@@ -1,0 +1,54 @@
+{
+  "profile_id": "service_agreement_v1",
+  "display_name": "eBRAM Customer Service Agreement",
+  "recognition_anchors": [
+    "SERVICE AGREEMENT",
+    "Amount at signing of this Agreement",
+    "SERVICE PROVIDER",
+    "CLIENT"
+  ],
+  "expected_service_rows": 10,
+  "service_row_policy": {
+    "included": [1, 2, 3, 4],
+    "optional": [5, 6],
+    "blank": [7, 8, 9, 10]
+  },
+  "allowed_rewrites": [
+    "party_identification",
+    "service_rows",
+    "payment_summary",
+    "signature_company_names"
+  ],
+  "field_semantic_keys": {
+    "p002_f01": "effective_date",
+    "p002_f02": "provider_identity",
+    "p002_f03": "provider_address",
+    "p002_f04": "client_identity",
+    "p002_f05": "client_address",
+    "p016_f01": "signing_payment",
+    "p016_f02": "onboarding_payment",
+    "p021_f01": "invoice_payment_days",
+    "p024_f01": "agreement_term",
+    "p030_f01": "termination_notice",
+    "p031_f01": "materials_return",
+    "t000_r000_c000_p001_f01": "provider_signatory_name",
+    "t000_r000_c000_p002_f01": "provider_signature",
+    "t000_r000_c000_p003_f01": "provider_signature_date",
+    "t000_r000_c001_p001_f01": "client_signatory_name",
+    "t000_r000_c001_p002_f01": "client_signature",
+    "t000_r000_c001_p003_f01": "client_signature_date"
+  },
+  "template_defaults": {
+    "termination_notice": "30",
+    "materials_return": "10"
+  },
+  "execution_blank_semantic_keys": [
+    "effective_date",
+    "provider_signatory_name",
+    "provider_signature",
+    "provider_signature_date",
+    "client_signatory_name",
+    "client_signature",
+    "client_signature_date"
+  ]
+}

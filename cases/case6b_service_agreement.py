@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import csv
 import io
 import json
 import logging
@@ -58,13 +59,16 @@ ALLOWED_AGENT_STATUSES = {
     "NEEDS_CONFIRMATION",
     "REMOVE",
     "LEAVE_BLANK",
+    "KEEP_BLANK",
 }
 _BLANK_RE = re.compile(r"_{4,}")
+_BRACKET_RE = re.compile(r"\[([A-Za-z][A-Za-z0-9_ ]{0,80})\]")
 _LOCATOR_RE = re.compile(
     r"^(?:paragraph:(?P<paragraph>\d+)|"
     r"table:(?P<table>\d+)/row:(?P<row>\d+)/cell:(?P<cell>\d+)/paragraph:(?P<cellpara>\d+))"
-    r"/blank:(?P<blank>\d+)$"
+    r"/(?:blank|placeholder):(?P<blank>\d+)$"
 )
+PROFILE_PATH = Path(__file__).with_name("profiles") / "case6b_service_agreement_v1.json"
 
 
 @dataclass
@@ -94,6 +98,8 @@ class Case6BSession:
     field_manifest: dict[str, Any]
     fields: list[dict[str, Any]] = field(default_factory=list)
     conflicts: list[dict[str, Any]] = field(default_factory=list)
+    form_entries: dict[str, Any] = field(default_factory=dict)
+    template_version: int = 1
     full_summary: dict[str, Any] | None = None
     review_version: int = 0
     generated_docx: bytes | None = None
@@ -145,8 +151,10 @@ def validate_template(content: bytes, filename: str) -> TemplateRecord:
         for cell in row.cells
         for paragraph in cell.paragraphs
     )
-    if not any(_BLANK_RE.search(text) for text in text_parts):
-        raise ValueError("DOCX 模板中没有可识别的连续下划线占位符")
+    if not any(
+        _BLANK_RE.search(text) or _BRACKET_RE.search(text) for text in text_parts
+    ):
+        raise ValueError("DOCX 模板中没有可识别的下划线或方括号占位符")
     text = "\n".join(text_parts)
     chinese_chars = len(re.findall(r"[\u3400-\u9fff]", text))
     language = "zh_tw" if chinese_chars > max(20, len(text) // 8) else "en"
@@ -157,6 +165,35 @@ def _placeholder_context(text: str, match: re.Match[str]) -> str:
     start = max(0, match.start() - 55)
     end = min(len(text), match.end() + 55)
     return text[start:match.start()] + "[blank]" + text[match.end():end]
+
+
+def _placeholder_matches(text: str) -> list[tuple[re.Match[str], str]]:
+    matches = [(match, "underscore") for match in _BLANK_RE.finditer(text)]
+    matches.extend((match, "bracket") for match in _BRACKET_RE.finditer(text))
+    return sorted(matches, key=lambda item: item[0].start())
+
+
+def _load_service_agreement_profile() -> dict[str, Any]:
+    return json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+
+
+def _detect_profile(document: Document, service_rows: int) -> dict[str, Any] | None:
+    text = "\n".join(
+        [paragraph.text for paragraph in document.paragraphs]
+        + [
+            cell.text
+            for table in document.tables
+            for row in table.rows
+            for cell in row.cells
+        ]
+    )
+    profile = _load_service_agreement_profile()
+    if (
+        service_rows == profile["expected_service_rows"]
+        and all(anchor in text for anchor in profile["recognition_anchors"])
+    ):
+        return profile
+    return None
 
 
 def _field_hint(text: str, blank_index: int, group_index: int | None) -> dict[str, Any]:
@@ -192,13 +229,13 @@ def extract_template_manifest(content: bytes) -> dict[str, Any]:
     fields: list[dict[str, Any]] = []
     service_index = 0
     for paragraph_index, paragraph in enumerate(document.paragraphs):
-        matches = list(_BLANK_RE.finditer(paragraph.text))
+        matches = _placeholder_matches(paragraph.text)
         if not matches:
             continue
         is_service = len(matches) == 2 and "price" in paragraph.text.lower()
         if is_service:
             service_index += 1
-        for blank_index, match in enumerate(matches, 1):
+        for blank_index, (match, placeholder_type) in enumerate(matches, 1):
             hint = _field_hint(
                 paragraph.text,
                 blank_index,
@@ -209,6 +246,13 @@ def extract_template_manifest(content: bytes) -> dict[str, Any]:
                     "field_id": f"p{paragraph_index:03d}_f{blank_index:02d}",
                     "locator": f"paragraph:{paragraph_index}/blank:{blank_index}",
                     "context": _placeholder_context(paragraph.text, match),
+                    "placeholder_type": placeholder_type,
+                    "placeholder_text": match.group(0),
+                    "semantic_key": (
+                        match.group(1).strip().lower().replace(" ", "_")
+                        if placeholder_type == "bracket"
+                        else ""
+                    ),
                     **hint,
                 }
             )
@@ -216,8 +260,8 @@ def extract_template_manifest(content: bytes) -> dict[str, Any]:
         for row_index, row in enumerate(table.rows):
             for cell_index, cell in enumerate(row.cells):
                 for paragraph_index, paragraph in enumerate(cell.paragraphs):
-                    for blank_index, match in enumerate(
-                        _BLANK_RE.finditer(paragraph.text), 1
+                    for blank_index, (match, placeholder_type) in enumerate(
+                        _placeholder_matches(paragraph.text), 1
                     ):
                         hint = _field_hint(paragraph.text, blank_index, None)
                         fields.append(
@@ -235,14 +279,62 @@ def extract_template_manifest(content: bytes) -> dict[str, Any]:
                                 "context": _placeholder_context(
                                     paragraph.text, match
                                 ),
+                                "placeholder_type": placeholder_type,
+                                "placeholder_text": match.group(0),
+                                "semantic_key": (
+                                    match.group(1).strip().lower().replace(" ", "_")
+                                    if placeholder_type == "bracket"
+                                    else ""
+                                ),
                                 **hint,
                             }
                         )
     if not fields:
-        raise ValueError("DOCX 模板中没有可识别的连续下划线占位符")
+        raise ValueError("DOCX 模板中没有可识别的下划线或方括号占位符")
     if len(fields) > 200:
         raise ValueError("DOCX 模板最多支持 200 个下划线占位符")
-    return {"template_language": "en", "fields": fields}
+    profile = _detect_profile(document, service_index)
+    if profile:
+        semantic_keys = profile.get("field_semantic_keys", {})
+        for item in fields:
+            if item["field_id"] in semantic_keys:
+                item["semantic_key"] = semantic_keys[item["field_id"]]
+    return {
+        "template_language": "en",
+        "fields": fields,
+        "profile_id": profile["profile_id"] if profile else None,
+        "profile_name": profile["display_name"] if profile else None,
+        "template_confirmed": profile is not None,
+        "recognition_mode": "profile" if profile else "detected",
+        "repeat_blocks": [
+            {"group_key": "services", "rows": service_index}
+        ]
+        if service_index
+        else [],
+        "signature_sections": [
+            field["field_id"]
+            for field in fields
+            if field.get("field_kind") in SIGNATURE_KINDS
+        ],
+        "allowed_rewrites": profile["allowed_rewrites"] if profile else [],
+        "template_defaults": profile["template_defaults"] if profile else {},
+    }
+
+
+def build_template_preflight(manifest: dict[str, Any], version: int = 1) -> dict[str, Any]:
+    return {
+        "version": version,
+        "profile_id": manifest.get("profile_id"),
+        "profile_name": manifest.get("profile_name"),
+        "recognition_mode": manifest.get("recognition_mode", "detected"),
+        "confirmed": bool(manifest.get("template_confirmed")),
+        "field_count": len(manifest.get("fields", [])),
+        "fields": manifest.get("fields", []),
+        "repeat_blocks": manifest.get("repeat_blocks", []),
+        "signature_sections": manifest.get("signature_sections", []),
+        "allowed_rewrites": manifest.get("allowed_rewrites", []),
+        "defaults": manifest.get("template_defaults", {}),
+    }
 
 
 def _validate_pdf(content: bytes) -> int:
@@ -323,10 +415,10 @@ def _workbook_info(content: bytes) -> tuple[int, int]:
 
 def validate_material(content: bytes, filename: str) -> MaterialRecord:
     suffix = Path(filename).suffix.lower()
-    allowed = {".pdf", ".png", ".jpg", ".jpeg", ".jfif", ".xlsx"}
+    allowed = {".pdf", ".png", ".jpg", ".jpeg", ".jfif", ".xlsx", ".docx", ".csv"}
     if suffix not in allowed:
-        raise ValueError("材料仅支持 PDF、PNG、JPG、JPEG、JFIF 或 XLSX")
-    max_bytes = MAX_XLSX_BYTES if suffix == ".xlsx" else MAX_MATERIAL_BYTES
+        raise ValueError("材料仅支持 PDF、PNG、JPG、JPEG、JFIF、XLSX、DOCX 或 CSV")
+    max_bytes = MAX_XLSX_BYTES if suffix in {".xlsx", ".docx", ".csv"} else MAX_MATERIAL_BYTES
     if len(content) > max_bytes:
         limit = "10 MB" if suffix == ".xlsx" else "25 MB"
         raise ValueError(f"材料《{filename}》不能超过 {limit}")
@@ -340,6 +432,21 @@ def validate_material(content: bytes, filename: str) -> MaterialRecord:
             raise ValueError("文件内容不是有效的 XLSX")
         units, _ = _workbook_info(content)
         file_type = "xlsx"
+    elif suffix == ".docx":
+        document = _open_docx(content)
+        units = sum(1 for paragraph in document.paragraphs if paragraph.text.strip())
+        units += sum(
+            1
+            for table in document.tables
+            for row in table.rows
+            if any(cell.text.strip() for cell in row.cells)
+        )
+        if not units:
+            raise ValueError("DOCX 材料不包含可读取内容")
+        file_type = "docx"
+    elif suffix == ".csv":
+        _, units = extract_csv_markdown(content, filename)
+        file_type = "csv"
     else:
         _validate_image(content)
         units = 1
@@ -419,6 +526,62 @@ def extract_xlsx_markdown(content: bytes, filename: str) -> tuple[str, int]:
     if not units:
         raise ValueError("XLSX 不包含可读取的数据")
     return "\n".join(sections), units
+
+
+def extract_docx_markdown(content: bytes, filename: str) -> tuple[str, int]:
+    document = _open_docx(content)
+    lines = [f"# {filename}"]
+    units = 0
+    for index, paragraph in enumerate(document.paragraphs, 1):
+        text = paragraph.text.strip()
+        if text:
+            units += 1
+            lines.append(f"- paragraph:{index}: {text}")
+    for table_index, table in enumerate(document.tables, 1):
+        for row_index, row in enumerate(table.rows, 1):
+            values = [cell.text.strip() for cell in row.cells]
+            if any(values):
+                units += 1
+                lines.append(
+                    f"- table:{table_index}/row:{row_index}: "
+                    + " | ".join(values)
+                )
+    if not units:
+        raise ValueError("DOCX 材料不包含可读取内容")
+    return "\n".join(lines), units
+
+
+def extract_csv_markdown(content: bytes, filename: str) -> tuple[str, int]:
+    if len(content) > MAX_XLSX_BYTES:
+        raise ValueError("CSV 材料不能超过 10 MB")
+    decoded = None
+    for encoding in ("utf-8-sig", "utf-8", "big5", "gb18030"):
+        try:
+            decoded = content.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    if decoded is None:
+        raise ValueError("CSV 编码无法识别")
+    if "\x00" in decoded:
+        raise ValueError("CSV 文件内容无效")
+    try:
+        dialect = csv.Sniffer().sniff(decoded[:4096], delimiters=",;\t|")
+    except csv.Error:
+        dialect = csv.excel
+    rows = list(csv.reader(io.StringIO(decoded), dialect))
+    effective = [row for row in rows if any(cell.strip() for cell in row)]
+    if not effective:
+        raise ValueError("CSV 不包含可读取数据")
+    if sum(len(row) for row in effective) > MAX_XLSX_CELLS:
+        raise ValueError(f"CSV 最多支持 {MAX_XLSX_CELLS} 个有效单元格")
+    lines = [f"# {filename}"]
+    for index, row in enumerate(effective, 1):
+        lines.append(
+            f"- row:{index}: "
+            + " | ".join(f"column:{column}={value.strip()}" for column, value in enumerate(row, 1))
+        )
+    return "\n".join(lines), len(effective)
 
 
 def parse_agent_json(text: str) -> dict[str, Any]:
@@ -531,7 +694,7 @@ def _set_highlight(run) -> None:
 def _replace_blank(paragraph, blank_index: int, replacement: str, highlight: bool) -> None:
     runs = list(paragraph.runs)
     text = "".join(run.text for run in runs)
-    matches = list(_BLANK_RE.finditer(text))
+    matches = [item[0] for item in _placeholder_matches(text)]
     if blank_index < 1 or blank_index > len(matches):
         raise ValueError("模板占位符数量已变化，无法安全回填")
     target = matches[blank_index - 1]
@@ -587,6 +750,90 @@ def _replace_blank(paragraph, blank_index: int, replacement: str, highlight: boo
             run.text = ""
 
 
+def _append_paragraph_after(paragraph, text: str):
+    new_paragraph = OxmlElement("w:p")
+    if paragraph._p.pPr is not None:
+        new_paragraph.append(deepcopy(paragraph._p.pPr))
+    run = OxmlElement("w:r")
+    text_node = OxmlElement("w:t")
+    text_node.set(qn("xml:space"), "preserve")
+    text_node.text = text
+    run.append(text_node)
+    new_paragraph.append(run)
+    paragraph._p.addnext(new_paragraph)
+    return new_paragraph
+
+
+def _money_number(value: str) -> int | None:
+    match = re.search(r"(?:HKD|HK\$|\$)\s*([\d,]+(?:\.\d+)?)", value, re.I)
+    if not match:
+        return None
+    try:
+        return round(float(match.group(1).replace(",", "")))
+    except ValueError:
+        return None
+
+
+def _apply_service_agreement_rewrites(
+    document: Document,
+    manifest: dict[str, Any],
+    fields_by_id: dict[str, dict[str, Any]],
+) -> None:
+    if manifest.get("profile_id") != "service_agreement_v1":
+        return
+    definitions = {field["field_id"]: field for field in manifest["fields"]}
+    semantic = {
+        definition.get("semantic_key"): fields_by_id[field_id]
+        for field_id, definition in definitions.items()
+        if definition.get("semantic_key") and field_id in fields_by_id
+    }
+    included_amounts: list[int] = []
+    for field_id, definition in definitions.items():
+        if definition.get("field_kind") != "repeatable_price":
+            continue
+        result = fields_by_id[field_id]
+        if result.get("service_action") != "included":
+            continue
+        amount = _money_number(str(result.get("value", "")))
+        if amount is not None:
+            included_amounts.append(amount)
+    if included_amounts:
+        total = sum(included_amounts)
+        payment_definition = next(
+            (
+                definition
+                for definition in manifest["fields"]
+                if definition.get("semantic_key") == "onboarding_payment"
+            ),
+            None,
+        )
+        if payment_definition:
+            paragraph, _ = _paragraph_for_locator(
+                document, payment_definition["locator"]
+            )
+            _append_paragraph_after(
+                paragraph,
+                "Amount after receipt of the monthly service report and invoice: "
+                f"HKD {total:,} per service month.",
+            )
+    provider = str(semantic.get("provider_identity", {}).get("value", "")).strip()
+    client = str(semantic.get("client_identity", {}).get("value", "")).strip()
+    if document.tables:
+        signature_table = document.tables[0]
+        for cell, company in zip(signature_table.rows[0].cells[:2], (provider, client)):
+            if company and len(cell.paragraphs) >= 2:
+                company_paragraph = cell.paragraphs[1].insert_paragraph_before(company)
+                company_paragraph.paragraph_format.keep_with_next = True
+            for paragraph in cell.paragraphs:
+                paragraph.paragraph_format.keep_together = True
+                paragraph.paragraph_format.keep_with_next = (
+                    paragraph is not cell.paragraphs[-1]
+                )
+        row_properties = signature_table.rows[0]._tr.get_or_add_trPr()
+        if row_properties.find(qn("w:cantSplit")) is None:
+            row_properties.append(OxmlElement("w:cantSplit"))
+
+
 def render_draft_docx(
     template_bytes: bytes,
     manifest: dict[str, Any],
@@ -627,7 +874,7 @@ def render_draft_docx(
     for field_id, definition in manifest_by_id.items():
         result = fields_by_id[field_id]
         status = result["status"]
-        if status in {"LEAVE_BLANK", "REMOVE"}:
+        if status in {"LEAVE_BLANK", "REMOVE", "KEEP_BLANK"}:
             continue
         replacement = result.get("value", "") if status in {"FILLED", "USER_CONFIRMED"} else marker
         highlight = status == "NEEDS_CONFIRMATION"
@@ -654,6 +901,9 @@ def render_draft_docx(
     for paragraph_index in sorted(remove_paragraphs, reverse=True):
         paragraph = document.paragraphs[paragraph_index]
         paragraph._element.getparent().remove(paragraph._element)
+    _apply_service_agreement_rewrites(
+        document, manifest, fields_by_id
+    )
 
     output = io.BytesIO()
     document.save(output)
@@ -665,6 +915,7 @@ def apply_review_changes(
     version: int,
     field_updates: list[dict[str, Any]],
     service_rows: list[dict[str, Any]],
+    conflict_resolutions: list[dict[str, Any]] | None = None,
 ) -> int:
     if version != session.review_version:
         raise ValueError("审阅内容已更新，请刷新后再提交")
@@ -687,6 +938,9 @@ def apply_review_changes(
         fields_by_id[field_id]["status"] = (
             "USER_CONFIRMED" if value else "NEEDS_CONFIRMATION"
         )
+        fields_by_id[field_id]["source_type"] = (
+            "user_confirmed" if value else "evidence"
+        )
         fields_by_id[field_id]["value"] = value
         fields_by_id[field_id]["evidence"] = (
             [{"source": "User confirmation", "fact": value}] if value else []
@@ -707,10 +961,12 @@ def apply_review_changes(
         if action == "remove":
             status = "REMOVE"
             name = price = ""
-        elif action == "keep" and name and price:
+        elif action == "blank" and not name and not price:
+            status = "KEEP_BLANK"
+        elif action in {"included", "optional", "keep"} and name and price:
             status = "USER_CONFIRMED"
         else:
-            raise ValueError("保留服务行时必须同时填写服务名称和价格")
+            raise ValueError("正式或可选服务必须同时填写服务名称和价格；空白行不得填写内容")
         current_values = {
             definition["field_kind"]: fields_by_id[definition["field_id"]]
             for definition in definitions
@@ -718,7 +974,18 @@ def apply_review_changes(
         current_action = (
             "remove"
             if all(item.get("status") == "REMOVE" for item in current_values.values())
-            else "keep"
+            else (
+                "blank"
+                if all(item.get("status") == "KEEP_BLANK" for item in current_values.values())
+                else next(
+                    (
+                        item.get("service_action")
+                        for item in current_values.values()
+                        if item.get("service_action")
+                    ),
+                    "included",
+                )
+            )
         )
         if (
             action == current_action
@@ -732,6 +999,14 @@ def apply_review_changes(
             target = fields_by_id[definition["field_id"]]
             target.setdefault("original", deepcopy(target))
             target["status"] = status
+            target["service_action"] = action if action != "keep" else "included"
+            target["source_type"] = (
+                "user_confirmed"
+                if status == "USER_CONFIRMED"
+                else "template_default"
+                if status == "KEEP_BLANK"
+                else "evidence"
+            )
             target["value"] = (
                 price if definition["field_kind"] == "repeatable_price" else name
             )
@@ -740,6 +1015,20 @@ def apply_review_changes(
                 if status == "USER_CONFIRMED"
                 else []
             )
+    conflict_by_id = {
+        str(conflict.get("conflict_id")): conflict for conflict in session.conflicts
+    }
+    for resolution in conflict_resolutions or []:
+        conflict_id = str(resolution.get("conflict_id", ""))
+        conflict = conflict_by_id.get(conflict_id)
+        if conflict is None:
+            raise ValueError(f"未知冲突：{conflict_id}")
+        value = str(resolution.get("value", "")).strip()
+        if not value:
+            raise ValueError("冲突解决值不能为空")
+        conflict["resolved"] = True
+        conflict["resolved_value"] = value
+        conflict["source_type"] = "user_confirmed"
     session.review_version += 1
     session.generated_docx = None
     session.generated_pdf = None
@@ -767,13 +1056,23 @@ def review_payload(session: Case6BSession) -> dict[str, Any]:
                 "group_index": definition.get("group_index"),
                 "required": bool(definition.get("required")),
                 "editable": definition.get("field_kind") not in SIGNATURE_KINDS,
+                "source_type": value.get("source_type")
+                or (
+                    "user_confirmed"
+                    if value.get("status") == "USER_CONFIRMED"
+                    else "evidence"
+                ),
             }
         )
+    unresolved_conflicts = [
+        conflict for conflict in session.conflicts if not conflict.get("resolved")
+    ]
     return {
         "version": session.review_version,
         "template_language": session.template.language,
         "fields": fields,
         "conflicts": session.conflicts,
+        "unresolved_conflict_count": len(unresolved_conflicts),
         "unresolved_count": sum(
             1
             for field in fields
@@ -995,9 +1294,18 @@ async def _ocr_pdf(content: bytes, filename: str) -> list[str]:
 def _agent_a_prompt(filename: str, unit_label: str, content: str) -> str:
     return (
         "You are processing one evidence unit for service-agreement drafting. "
-        "Extract only explicit facts. Preserve names, addresses, dates, amounts, "
-        "currencies, payment bases, commitments, exclusions and uncertainty. "
-        "Do not infer or give legal advice. Return concise structured content.\n\n"
+        "Extract only explicit facts. Preserve the raw text and also provide a normalized "
+        "value for names, addresses, dates, amounts, currencies, durations, billing units, "
+        "commitments, exclusions and uncertainty. Do not infer or give legal advice. "
+        "Return one JSON object only in the form "
+        '{"facts":[{"semantic_key":"snake_case_key","raw_value":"source wording",'
+        '"normalized_value":"normalized value","category":"party|service|payment|term|other",'
+        '"currency":null,"unit":null,"source":"filename","locator":"page:1"}]}. '
+        "Use role-specific scalar keys such as provider_identity, provider_cr_number, "
+        "client_identity, client_cr_number, agreement_term and invoice_payment_days. "
+        "Do not reuse a generic key such as party_name or amount for different parties, "
+        "services or payment events. Use an empty facts array when the source contains no "
+        "relevant explicit fact.\n\n"
         f"Source: {filename}\nLocator: {unit_label}\n\n{content}"
     )
 
@@ -1006,6 +1314,12 @@ async def _summarize_material(material: MaterialRecord) -> list[dict[str, Any]]:
     if material.file_type == "xlsx":
         markdown, _ = extract_xlsx_markdown(material.content, material.filename)
         units = [("workbook", markdown)]
+    elif material.file_type == "docx":
+        markdown, _ = extract_docx_markdown(material.content, material.filename)
+        units = [("document", markdown)]
+    elif material.file_type == "csv":
+        markdown, _ = extract_csv_markdown(material.content, material.filename)
+        units = [("table", markdown)]
     else:
         pdf = (
             image_to_pdf(material.content)
@@ -1047,13 +1361,150 @@ async def _summarize_material(material: MaterialRecord) -> list[dict[str, Any]]:
         reply = await _send_message(
             auth_headers(), conversation_id, payload, timeout=180.0
         )
-        facts.append(
+        try:
+            parsed = parse_agent_json(reply)
+            unit_facts = parsed.get("facts")
+        except ValueError:
+            unit_facts = None
+        if not isinstance(unit_facts, list):
+            unit_facts = [
+                {
+                    "semantic_key": "unstructured_summary",
+                    "raw_value": reply,
+                    "normalized_value": reply,
+                    "category": "other",
+                    "currency": None,
+                    "unit": None,
+                    "source": material.filename,
+                    "locator": unit_label,
+                }
+            ]
+        for fact in unit_facts:
+            if not isinstance(fact, dict):
+                continue
+            fact["source"] = material.filename
+            fact["locator"] = fact.get("locator") or unit_label
+            fact["raw_value"] = str(fact.get("raw_value", "")).strip()
+            fact["normalized_value"] = str(
+                fact.get("normalized_value") or fact.get("raw_value") or ""
+            ).strip()
+            if fact["raw_value"] or fact["normalized_value"]:
+                facts.append(fact)
+    return facts
+
+
+def detect_fact_conflicts(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for source in sources:
+        for fact in source.get("facts", []):
+            key = str(fact.get("semantic_key", "")).strip()
+            value = str(fact.get("normalized_value", "")).strip()
+            if (
+                key
+                and key != "unstructured_summary"
+                and _is_conflict_scalar_key(key)
+                and fact.get("category") != "service"
+                and not key.startswith("service_")
+                and value
+            ):
+                fact["canonical_value"] = _canonical_fact_value(key, value)
+                grouped.setdefault(key, []).append(fact)
+    conflicts = []
+    for key, facts in grouped.items():
+        distinct: dict[str, list[dict[str, Any]]] = {}
+        for fact in facts:
+            distinct.setdefault(str(fact["canonical_value"]).casefold(), []).append(fact)
+        if len(distinct) < 2:
+            continue
+        conflicts.append(
             {
-                "locator": unit_label,
-                "summary": reply,
+                "conflict_id": f"{key}-{uuid.uuid4().hex[:8]}",
+                "semantic_key": key,
+                "candidates": [
+                    {
+                        "value": values[0]["normalized_value"],
+                        "evidence": [
+                            {
+                                "source": value.get("source"),
+                                "locator": value.get("locator"),
+                                "fact": value.get("raw_value"),
+                            }
+                            for value in values
+                        ],
+                    }
+                    for values in distinct.values()
+                ],
+                "resolved": False,
             }
         )
-    return facts
+    return conflicts
+
+
+def _is_conflict_scalar_key(key: str) -> bool:
+    exact = {
+        "provider_identity",
+        "provider_name",
+        "provider_cr_number",
+        "provider_address",
+        "client_identity",
+        "client_name",
+        "client_cr_number",
+        "client_address",
+        "effective_date",
+        "agreement_term",
+        "term_duration",
+        "contract_term",
+        "invoice_payment_days",
+        "payment_terms",
+        "monthly_total",
+        "monthly_fee",
+        "signing_payment",
+        "onboarding_payment",
+        "termination_notice",
+        "materials_return",
+    }
+    if key in exact:
+        return True
+    return key.startswith(("provider_", "client_")) and key.endswith(
+        ("name", "identity", "number", "address")
+    )
+
+
+def _canonical_fact_value(key: str, value: str) -> str:
+    compact = re.sub(r"\s+", " ", value).strip()
+    lowered = compact.casefold().replace("–", "-").replace("—", "-")
+    if key.endswith(("_identity", "_name")):
+        lowered = re.sub(
+            r"\s*\((?:cr\s*(?:no\.?|number)?[:.]?\s*)?\d+\)\s*",
+            "",
+            lowered,
+        )
+        return re.sub(r"[^\w]+", " ", lowered).strip()
+    net_days = re.search(r"\bnet\s*(\d+)\b", lowered)
+    if net_days and key in {"invoice_payment_days", "payment_terms"}:
+        return f"{int(net_days.group(1))} days"
+    if re.search(r"\b(?:one|1)\s*[- ]?year\b", lowered):
+        return "12 months"
+    duration = re.search(r"\b(\d+)\s*[- ]?(days?|months?|years?)\b", lowered)
+    if duration:
+        number = int(duration.group(1))
+        unit = duration.group(2).rstrip("s")
+        if unit == "year":
+            number *= 12
+            unit = "month"
+        return f"{number} {unit}{'' if number == 1 else 's'}"
+    money = re.search(
+        r"\b(?:hkd|hk\$|\$)\s*([\d,]+(?:\.\d+)?)\b(?:\s*/\s*|\s+per\s+)?([\w -]+)?",
+        lowered,
+    )
+    if money:
+        amount = money.group(1).replace(",", "")
+        basis = re.sub(r"\s+", " ", (money.group(2) or "")).strip()
+        basis = re.sub(r"\bmonthly\b", "month", basis)
+        return f"HKD {amount}" + (f" per {basis}" if basis else "")
+    if key.endswith("_number"):
+        return re.sub(r"\D", "", compact)
+    return lowered
 
 
 def _validate_agent_fields(
@@ -1083,7 +1534,12 @@ def _validate_agent_fields(
                 raise ValueError("Agent 已填字段缺少证据来源")
             if item["status"] == "FILLED" and not str(item.get("value", "")).strip():
                 raise ValueError("Agent 已填字段缺少字段值")
-            if item["status"] in {"NEEDS_CONFIRMATION", "REMOVE", "LEAVE_BLANK"}:
+            if item["status"] in {
+                "NEEDS_CONFIRMATION",
+                "REMOVE",
+                "LEAVE_BLANK",
+                "KEEP_BLANK",
+            }:
                 item["value"] = ""
                 if item["status"] != "NEEDS_CONFIRMATION":
                     item["evidence"] = []
@@ -1099,11 +1555,86 @@ def _merge_manifest(
     merged = []
     for field in fields:
         local = local_by_id[field["field_id"]]
-        merged.append({**local, **field, "locator": local["locator"]})
+        combined = {**local, **field}
+        for key in (
+            "locator",
+            "placeholder_type",
+            "placeholder_text",
+            "field_kind",
+            "group_key",
+            "group_index",
+        ):
+            if key in local:
+                combined[key] = local[key]
+        if local.get("semantic_key"):
+            combined["semantic_key"] = local["semantic_key"]
+        merged.append(combined)
     return {
+        **{key: value for key, value in local_manifest.items() if key != "fields"},
         "template_language": parsed.get("template_language") or "en",
         "fields": merged,
     }
+
+
+def _apply_profile_policies(session: Case6BSession) -> None:
+    if session.field_manifest.get("profile_id") != "service_agreement_v1":
+        for field in session.fields:
+            field.setdefault("source_type", "evidence")
+        return
+    profile = _load_service_agreement_profile()
+    definitions = {
+        field["field_id"]: field for field in session.field_manifest["fields"]
+    }
+    defaults = profile.get("template_defaults", {})
+    for field in session.fields:
+        definition = definitions[field["field_id"]]
+        semantic_key = definition.get("semantic_key")
+        field.setdefault("source_type", "evidence")
+        if semantic_key == "effective_date" or semantic_key in profile.get(
+            "execution_blank_semantic_keys", []
+        ):
+            field.update(
+                {
+                    "status": "LEAVE_BLANK",
+                    "value": "",
+                    "evidence": [],
+                    "source_type": "template_default",
+                }
+            )
+        elif semantic_key in defaults and field.get("status") != "FILLED":
+            field.update(
+                {
+                    "status": "FILLED",
+                    "value": defaults[semantic_key],
+                    "evidence": [
+                        {
+                            "source": "Template profile",
+                            "fact": f"Confirmed default: {defaults[semantic_key]}",
+                        }
+                    ],
+                    "source_type": "template_default",
+                }
+            )
+        group_index = definition.get("group_index")
+        if group_index is None:
+            continue
+        policy = profile.get("service_row_policy", {})
+        if group_index in policy.get("included", []):
+            field["service_action"] = "included"
+        elif group_index in policy.get("optional", []):
+            field["service_action"] = "optional"
+            if field.get("status") == "REMOVE":
+                field["status"] = "NEEDS_CONFIRMATION"
+        elif group_index in policy.get("blank", []):
+            field.update(
+                {
+                    "status": "KEEP_BLANK",
+                    "value": "",
+                    "evidence": [],
+                    "service_action": "blank",
+                    "source_type": "template_default",
+                }
+            )
 
 
 async def _run_agent_l(session: Case6BSession) -> None:
@@ -1134,6 +1665,22 @@ async def _run_agent_l(session: Case6BSession) -> None:
                     {
                         "template_language": merged_manifest["template_language"],
                         "fields": merged_manifest["fields"],
+                        "profile_id": merged_manifest.get("profile_id"),
+                        "template_defaults": merged_manifest.get(
+                            "template_defaults", {}
+                        ),
+                        "repeat_blocks": merged_manifest.get("repeat_blocks", []),
+                        "allowed_rewrites": merged_manifest.get(
+                            "allowed_rewrites", []
+                        ),
+                        "service_row_policy": (
+                            _load_service_agreement_profile().get(
+                                "service_row_policy", {}
+                            )
+                            if merged_manifest.get("profile_id")
+                            == "service_agreement_v1"
+                            else {}
+                        ),
                     },
                     session.full_summary or {"sources": []},
                 ),
@@ -1144,10 +1691,21 @@ async def _run_agent_l(session: Case6BSession) -> None:
             session.fields = _validate_agent_fields(
                 merged_manifest, parsed_fill, filled=True
             )
-            session.conflicts = (
+            agent_conflicts = (
                 parsed_fill.get("conflicts")
                 if isinstance(parsed_fill.get("conflicts"), list)
                 else []
+            )
+            _apply_profile_policies(session)
+            existing = {
+                conflict.get("conflict_id") or json.dumps(conflict, sort_keys=True)
+                for conflict in session.conflicts
+            }
+            session.conflicts.extend(
+                conflict
+                for conflict in agent_conflicts
+                if (conflict.get("conflict_id") or json.dumps(conflict, sort_keys=True))
+                not in existing
             )
             session.agent_l_conversation_id = conversation_id
             session.review_version = 1
@@ -1172,6 +1730,8 @@ class Case6BDraftingHandler(CaseHandler):
         if not values or not isinstance(values[0], Case6BSession):
             raise ValueError("Case 6B 会话不存在或已过期")
         session = values[0]
+        if not session.field_manifest.get("template_confirmed"):
+            raise ValueError("模板预检尚未确认，请先确认字段与重复区块")
         if session.lock.locked():
             raise ValueError("当前草案正在处理中，请稍候")
         async with session.lock:
@@ -1239,7 +1799,7 @@ class Case6BDraftingHandler(CaseHandler):
                 )
                 return
             session.full_summary = {
-                "summary_version": "case6b-v1",
+                "summary_version": "case6b-v1.1",
                 "sources": [
                     {
                         "filename": material.filename,
@@ -1248,8 +1808,11 @@ class Case6BDraftingHandler(CaseHandler):
                     }
                     for material in session.materials
                 ],
+                "form_entries": session.form_entries,
                 "conflicts": [],
             }
+            session.conflicts = detect_fact_conflicts(session.full_summary["sources"])
+            session.full_summary["conflicts"] = session.conflicts
             yield SseEvent(
                 "progress",
                 {
