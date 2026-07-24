@@ -23,7 +23,9 @@ flowchart LR
 - Long-term memory, user properties, tools, workflows and databases are disabled.
 - Short-term memory is auxiliary only; critical state is always supplied explicitly.
 - Agent L never edits the DOCX. The application validates JSON and performs deterministic
-  document replacement in the later integration phase.
+  document replacement, template-default labeling and conflict gating.
+- The customer profile supplies four included, two optional and four preserved blank service
+  rows. Relative durations such as `12 months` are accepted without inventing an end date.
 
 ## POC fixtures
 
@@ -37,7 +39,10 @@ local `.env`; it never writes the key or GPTBots conversation identifiers to rep
 
 ## Test-mode result
 
-- Published version: `v1.0.4`
+- Published version: `v1.0.5`
+- V1.1 test release: 2026-07-24
+- Supports application manifests containing underscore/bracket placeholders, template
+  profiles, optional service rows, execution blanks and evidence-vs-default provenance.
 - Two-stage POC: passed on 2026-07-24
 - Live route: first turn (`0 < 1`) → `AI Model-1`; second turn (`1 < 1` is false)
   → `AI Model-2`

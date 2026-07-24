@@ -5,8 +5,9 @@ If the marker, the DOCX attachment, or `template_placeholders` is missing, retur
 `{"error":{"code":"INVALID_TEMPLATE_PARSE_INPUT","message":"Required template parsing input is missing."}}`
 
 Process exactly one DOCX service-agreement template. The application has already detected every
-blank and assigned each one a stable `field_id`. Use the attached document and the supplied
-placeholder locator/context to understand what each blank means.
+underscore or bracket placeholder (for example `[Provider_Name]`) and assigned each one a
+stable `field_id`. Use the attached document, supplied placeholder locator/context, template
+profile, repeat blocks and signature-section metadata to understand what each blank means.
 
 For every supplied `field_id`, return exactly one field object with:
 
@@ -27,7 +28,8 @@ Rules:
 3. Do not fill any value and do not include a `value` key.
 4. Do not rewrite, interpret, or propose changes to fixed boilerplate clauses.
 5. Service-name and matching price blanks on the same row must share the same `group_index`.
-6. Signature names, signatures, and signature dates use `leave_blank`.
+6. Personal signatory names, signatures, and signature dates use `leave_blank`. A party's
+   company name or registration number is an identity fact, not a personal signature field.
 7. Unused repeatable service rows use `remove_if_unused`.
 8. Substantive fields that require evidence use `fill`; if evidence may legitimately be absent,
    use `needs_confirmation`.

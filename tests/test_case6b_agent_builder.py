@@ -145,12 +145,12 @@ class Case6BAgentBuilderTests(unittest.TestCase):
             {field["field_id"] for field in fields},
         )
         self.assertEqual(
-            sum(field["status"] == "REMOVE" for field in expected_fields),
-            12,
+            sum(field["status"] == "KEEP_BLANK" for field in expected_fields),
+            8,
         )
         self.assertEqual(
             sum(field["status"] == "LEAVE_BLANK" for field in expected_fields),
-            6,
+            7,
         )
 
     def test_unknown_delivery_recovers_new_message_without_resending(self):

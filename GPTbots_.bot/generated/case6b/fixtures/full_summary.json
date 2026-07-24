@@ -37,7 +37,8 @@
       "source_type": "structured_schedule",
       "facts": [
         "Kickoff target: 20 Jan 2026; onboarding completion target: 05 Feb 2026.",
-        "Month 1 and Month 2 service delivery each trigger HKD 68,000.",
+        "Contract signing and onboarding completion each have HKD 0 consideration.",
+        "Each completed service month triggers HKD 68,000.",
         "Monthly report plus invoice is the monthly acceptance evidence.",
         "The schedule does not state an amount payable at contract signing or at final completion."
       ]
@@ -50,7 +51,8 @@
         "Included: Endpoint Patching, monthly value HKD 16,000.",
         "Included: M365 Tenant Admin, monthly value HKD 22,000.",
         "Included: Monthly Reporting, monthly value HKD 10,000.",
-        "Asset Inventory and On-site Support are optional and not included.",
+        "Optional On-site Support is HKD 900 per hour with a minimum of 2 hours and is excluded from the monthly total.",
+        "Optional one-off Asset Inventory is HKD 8,000 per run and is excluded from the monthly total.",
         "The four included monthly values total HKD 68,000."
       ]
     },
