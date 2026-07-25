@@ -46,7 +46,9 @@ local `.env`; it never writes the key or GPTBots conversation identifiers to rep
 
 ## Test-mode result
 
-- Current test-mode release: `v1.0.9`
+- Current published test-mode release: `v1.0.9`
+- Filename-independent Role Prompt imported as draft `v1.0.11` on 2026-07-25;
+  it has not been released because publishing requires explicit approval.
 - Runtime payload: generic Markdown attachment contract plus concise text guidance
 - Supports application manifests containing underscore/bracket placeholders, optional service
   rows, execution blanks and evidence provenance.
