@@ -13,6 +13,7 @@ from cases.case1_party_questions import Case1Handler
 from cases.case2_mediator_briefing import Case2MediatorBriefingHandler
 from cases.case4_pdf_translation import Case4PdfTranslationHandler
 from cases.case5_hklii_search import Case5HkliiSearchHandler
+from cases.case6b_service_agreement import Case6BDraftingHandler
 
 # ── Case 注册表 ───────────────────────────────────────────────────────────────
 # key:   case_type 字符串，与 session_metadata["case_type"] 及前端传参保持一致
@@ -23,6 +24,7 @@ REGISTRY: dict[str, type[CaseHandler]] = {
     "case2": Case2MediatorBriefingHandler,
     "case4": Case4PdfTranslationHandler,
     "case5": Case5HkliiSearchHandler,
+    "case6b": Case6BDraftingHandler,
 }
 
 
@@ -31,7 +33,8 @@ def get_handler(case_type: str) -> CaseHandler:
     工厂函数：根据 case_type 字符串返回对应 CaseHandler 实例。
 
     Args:
-        case_type: 与 session_metadata["case_type"] 一致，如 "case1"、"case2"、"case4"、"case5"。
+        case_type: 与 session_metadata["case_type"] 一致，如
+                   "case1"、"case2"、"case4"、"case5"、"case6b"。
 
     Returns:
         对应 CaseHandler 的实例（无状态，每次调用新建）。

@@ -11,9 +11,11 @@ httpx>=0.27.0
 python-dotenv>=1.0.0
 
 # ── PDF / 文档处理 ────────────────────────────────────────
-pymupdf>=1.23.0          # import fitz：PDF 读取、页面渲染、译图校验与 PDF 合并
-python-docx>=1.1.0       # 生成 Word 报告（report_generator.py）
+pymupdf>=1.23.0          # PDF/OCR 预处理、Case 4 页面翻译与 Case 6B 图片材料封装
+python-docx>=1.1.0       # Case 1/2/5 报告及 Case 6B 模板解析、精准回填
 docx2pdf>=0.1.8          # Word→PDF 转换（Windows 需安装 Microsoft Word）
+openpyxl>=3.1.0          # Case 6B：本地读取 XLSX 材料
+lxml>=5.0.0              # Case 6A：官网知识库 HTML 清洗；Case 6B：DOCX OOXML 检查
 
 # ── Case 5 爬虫 ───────────────────────────────────────────
 playwright>=1.40.0       # HKLII 抓取；安装后需 playwright install chromium

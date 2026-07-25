@@ -9,6 +9,8 @@ from fastapi.staticfiles import StaticFiles
 
 from api.case5_routes import router as case5_router
 from api.case4_routes import router as case4_router
+from api.case6a_routes import router as case6a_router, start_case6a_cleanup_task
+from api.case6b_routes import router as case6b_router
 from api.chat import router as chat_router
 from api.graph_route import router as graph_router
 from api.pdf_chat import router as pdf_router, start_cleanup_task
@@ -33,6 +35,7 @@ async def lifespan(app: FastAPI):
     logger.info("服务启动中，正在验证配置...")
     validate_required_config()
     asyncio.create_task(start_cleanup_task())
+    asyncio.create_task(start_case6a_cleanup_task())
     logger.info("配置验证通过，服务已就绪 → http://localhost:8000")
     yield
     logger.info("服务已关闭")
@@ -46,6 +49,8 @@ app.include_router(graph_router)
 app.include_router(pdf_router)
 app.include_router(case4_router)
 app.include_router(case5_router)
+app.include_router(case6a_router)
+app.include_router(case6b_router)
 
 # ── 静态文件（前端资源）──────────────────────────────────────────────────────
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -79,6 +84,18 @@ async def case5():
 async def case4():
     """Case 4：英繁双向 PDF 翻译页面。"""
     return FileResponse("static/case4.html")
+
+
+@app.get("/case6a")
+async def case6a():
+    """Case 6A：eBRAM 官网服务指导助手。"""
+    return FileResponse("static/case6a.html")
+
+
+@app.get("/case6b")
+async def case6b():
+    """Case 6B：服务协议草案生成。"""
+    return FileResponse("static/case6b.html")
 
 
 if __name__ == "__main__":

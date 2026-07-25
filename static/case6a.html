@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>eBRAM AI · 服务指导助手</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/case6a.css" />
+  <link rel="preload" href="/static/fonts/outfit-400.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/static/fonts/outfit-600.woff2" as="font" type="font/woff2" crossorigin>
+  <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+  <script data-library="DOMPurify" src="https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.min.js"></script>
+</head>
+<body>
+
+<div class="layout c6-layout">
+  <div class="c6-sidebar-overlay" id="sidebarOverlay" hidden></div>
+
+  <nav class="sidebar c6-sidebar" id="sidebar" aria-label="对话导航">
+    <div class="sidebar-top">
+      <div class="logo-wrap">
+        <div class="logo"><span class="logo-mark">e</span>BRAM</div>
+        <div class="logo-sub">AI 文档助手</div>
+      </div>
+      <button class="theme-btn" id="themeBtn" title="切换主题" aria-label="切换深色/浅色主题">
+        <svg class="icon-moon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg class="icon-sun" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.72 12.72 1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+      </button>
+    </div>
+
+    <button class="new-chat-btn" id="newChatBtn">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+      新对话
+    </button>
+    <button class="reset-chat-btn" id="resetConversationBtn" type="button" title="清空当前对话并重置会话">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 11a8 8 0 1 0-2.34 5.66"/><path d="M20 4v7h-7"/></svg>
+      重置当前对话
+    </button>
+
+    <div class="sidebar-divider"></div>
+    <a class="sidebar-back-link" href="/" aria-label="返回场景选择页">
+      <svg class="back-chevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m15 18-6-6 6-6"/></svg>
+      返回选择
+    </a>
+
+    <div class="history-section">
+      <div class="sidebar-label">最近咨询</div>
+      <div class="history-list" id="historyList"></div>
+    </div>
+
+    <div class="c6-sidebar-note">
+      <span class="c6-live-dot" aria-hidden="true"></span>
+      基于 eBRAM 官网知识库
+    </div>
+  </nav>
+
+  <main class="main c6-main">
+    <header class="c6-mobile-header">
+      <button class="c6-icon-btn" id="sidebarToggle" aria-label="打开对话导航" aria-expanded="false">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <div>
+        <strong>eBRAM 服务指导助手</strong>
+        <small>Service Assistant</small>
+      </div>
+      <span class="c6-mobile-status" title="官网知识库已连接"></span>
+      <button class="c6-icon-btn c6-mobile-reset" id="mobileResetBtn" type="button" title="重置当前对话" aria-label="重置当前对话">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 11a8 8 0 1 0-2.34 5.66"/><path d="M20 4v7h-7"/></svg>
+      </button>
+    </header>
+
+    <div class="c6-context-bar">
+      <div class="c6-context-title">
+        <span class="c6-bookmark" aria-hidden="true">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h12v18l-6-4-6 4V3Z"/></svg>
+        </span>
+        <span><strong>eBRAM 服务指导助手</strong><small>Service Assistant</small></span>
+      </div>
+      <div class="c6-trust-badges" aria-label="服务能力">
+        <span><i class="c6-live-dot" aria-hidden="true"></i> eBRAM 官网知识库</span>
+        <span>English / 繁體中文</span>
+      </div>
+    </div>
+
+    <div class="messages-wrap c6-messages-wrap" id="messagesWrap">
+      <section class="welcome c6-welcome" id="welcome">
+        <div class="c6-emblem" aria-hidden="true">
+          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55"><path d="M5 4.5A2.5 2.5 0 0 1 7.5 2H20v17H7.5A2.5 2.5 0 0 0 5 21.5v-17Z"/><path d="M5 4.5v17M9 6h7M9 10h7M9 14h4"/></svg>
+        </div>
+        <div class="welcome-badge">Case 6A · Official Website Knowledge</div>
+        <h1>eBRAM 服务指导助手</h1>
+        <p>查询 eBRAM 服务、争议解决规则、费用与平台操作。回答仅基于已整理的官网资料。</p>
+
+        <div class="c6-suggestions" aria-label="常见问题">
+          <button class="c6-suggestion" data-question="eBRAM 提供哪些服务？">
+            <span>01</span><strong>eBRAM 提供哪些服务？</strong><small>服务范围与 LawTech 能力</small>
+          </button>
+          <button class="c6-suggestion" data-question="如何登记仲裁或调解案件？">
+            <span>02</span><strong>如何登记仲裁或调解案件？</strong><small>申请步骤与平台操作</small>
+          </button>
+          <button class="c6-suggestion" data-question="服务费用如何计算？">
+            <span>03</span><strong>服务费用如何计算？</strong><small>收费表与适用条件</small>
+          </button>
+          <button class="c6-suggestion" data-question="怎样联系技术支持？">
+            <span>04</span><strong>怎样联系技术支持？</strong><small>官方支援与联系方式</small>
+          </button>
+        </div>
+      </section>
+
+      <div class="messages-list c6-messages-list" id="messagesList"></div>
+    </div>
+
+    <div class="c6-assistant-status" id="assistantStatus" role="status" aria-live="polite" hidden>
+      <span class="c6-status-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      正在检索 eBRAM 官网资料并整理回答…
+    </div>
+
+    <div class="input-area c6-input-area">
+      <div class="input-box c6-input-box" id="inputBox">
+        <textarea id="textInput" maxlength="4000" placeholder="询问 eBRAM 服务、规则、费用或平台支持…" rows="1" aria-label="输入问题"></textarea>
+        <span class="c6-char-count" id="charCount" aria-hidden="true"></span>
+        <button class="send-btn" id="sendBtn" disabled title="发送 (Enter)" aria-label="发送问题">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+        </button>
+      </div>
+      <div class="input-footer">回答基于 eBRAM 官网资料，不构成法律意见；规则和费用请以官网最新内容为准。</div>
+    </div>
+  </main>
+</div>
+
+<script src="/static/common.js"></script>
+<script src="/static/case6a.js"></script>
+</body>
+</html>

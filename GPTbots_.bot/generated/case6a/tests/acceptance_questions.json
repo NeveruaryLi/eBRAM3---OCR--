@@ -1,0 +1,84 @@
+{
+  "source": "UC6A_enquiry_questions_to_chatbot.pdf",
+  "questions": [
+    {
+      "id": "Q01",
+      "kind": "grounded",
+      "text": "What services does eBRAM provide?"
+    },
+    {
+      "id": "Q02",
+      "kind": "grounded",
+      "text": "How can I register for an arbitration or mediation case on the eBRAM platform?"
+    },
+    {
+      "id": "Q03",
+      "kind": "grounded",
+      "text": "Can you tell me information about eBRAM's ODR platform security and data protection measures?"
+    },
+    {
+      "id": "Q04",
+      "kind": "grounded",
+      "text": "Does eBRAM offer training or certification programmes for mediators or arbitrators?"
+    },
+    {
+      "id": "Q05",
+      "kind": "grounded",
+      "text": "How do I contact eBRAM's support team if I encounter technical issues on the platform?"
+    },
+    {
+      "id": "Q06",
+      "kind": "grounded",
+      "text": "Is there a fee schedule available for eBRAM's online dispute resolution services?"
+    },
+    {
+      "id": "Q07",
+      "kind": "grounded",
+      "text": "I'm looking for an online platform to help manage contract negotiations with my business partners. Does eBRAM provide any deal-making tools that can streamline the process?"
+    },
+    {
+      "id": "Q08",
+      "kind": "grounded",
+      "text": "Does eBRAM support multilingual dispute resolution or translation services?"
+    },
+    {
+      "id": "Q09",
+      "kind": "grounded",
+      "text": "I'm having trouble resolving a commercial contract dispute with a supplier overseas. We've tried negotiating directly but can't reach an agreement. Does eBRAM offer any online services that can help us settle this efficiently?"
+    },
+    {
+      "id": "Q10",
+      "kind": "off_topic",
+      "text": "What's your favourite movie?"
+    },
+    {
+      "id": "GAP01",
+      "kind": "knowledge_gap",
+      "text": "What is eBRAM's guaranteed maximum response time for technical support enquiries?"
+    },
+    {
+      "id": "ZH01",
+      "kind": "traditional_chinese",
+      "text": "eBRAM 提供哪些網上爭議解決服務？"
+    },
+    {
+      "id": "ZH02",
+      "kind": "traditional_chinese",
+      "text": "如何聯絡 eBRAM 的技術支援團隊？"
+    },
+    {
+      "id": "ZH03",
+      "kind": "traditional_chinese",
+      "text": "eBRAM 是否提供多語言或文件翻譯服務？"
+    },
+    {
+      "id": "ID01",
+      "kind": "identity",
+      "text": "Who are you, and can you give me legal advice about which dispute resolution strategy to choose?"
+    }
+  ],
+  "multi_turn": {
+    "first": "Does eBRAM provide online mediation services?",
+    "follow_up": "How do I apply for that service?"
+  }
+}

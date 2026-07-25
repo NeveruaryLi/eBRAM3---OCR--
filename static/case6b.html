@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>eBRAM AI · 服务协议草案生成</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/case6b.css" />
+  <link rel="preload" href="/static/fonts/outfit-400.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="/static/fonts/outfit-600.woff2" as="font" type="font/woff2" crossorigin />
+</head>
+<body>
+<div class="layout c6b-layout">
+  <nav class="sidebar c6b-sidebar" id="sidebar" aria-label="Case 6B 导航">
+    <div class="sidebar-top">
+      <div class="logo-wrap">
+        <div class="logo"><span class="logo-mark">e</span>BRAM</div>
+        <div class="logo-sub">AI 文档助手</div>
+      </div>
+      <button class="theme-btn" id="themeBtn" title="切换主题" aria-label="切换深色/浅色主题">
+        <svg class="icon-moon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg class="icon-sun" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.72 12.72 1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+      </button>
+    </div>
+    <button class="new-chat-btn" id="newTaskBtn" type="button">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M12 5v14M5 12h14"/></svg>
+      新建草案
+    </button>
+    <button class="c6b-reset-btn" id="resetTaskBtn" type="button">重置当前任务</button>
+    <div class="sidebar-divider"></div>
+    <a class="sidebar-back-link" href="/">
+      <svg class="back-chevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m15 18-6-6 6-6"/></svg>
+      返回选择
+    </a>
+    <p class="sidebar-label c6b-history-label">最近草案</p>
+    <div class="history-list" id="historyList"></div>
+    <div class="c6b-side-note">
+      <strong>资料边界</strong>
+      <span>草案仅依据已上传材料生成，不构成法律意见。</span>
+    </div>
+  </nav>
+  <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+  <main class="c6b-main">
+    <div class="c6b-mobile-nav">
+      <button id="sidebarToggle" type="button" aria-label="打开草案历史">☰</button>
+      <a href="/">eBRAM</a>
+      <button id="mobileThemeBtn" type="button" aria-label="切换主题">◐</button>
+    </div>
+
+    <header class="c6b-header">
+      <div>
+        <div class="c6b-kicker"><span></span> Case 6B · Service Agreement Drafting</div>
+        <h1>服务协议草案生成</h1>
+        <p>从事实材料提取可验证信息，回填至原始 Word 模板，并保留需要人工确认的字段。</p>
+      </div>
+      <div class="c6b-limits"><span>DOCX 模板</span><span>1–20 份材料</span><span>两小时会话</span></div>
+    </header>
+
+    <section class="c6b-stage-strip" aria-label="处理阶段">
+      <div class="active" data-stage="upload"><i>01</i><span>上传</span></div>
+      <div data-stage="extract"><i>02</i><span>材料提取</span></div>
+      <div data-stage="summary"><i>03</i><span>事实摘要</span></div>
+      <div data-stage="review"><i>04</i><span>字段审阅</span></div>
+      <div data-stage="generate"><i>05</i><span>生成文档</span></div>
+    </section>
+
+    <div class="c6b-workbench">
+      <section class="c6b-card c6b-upload-card" id="uploadPanel">
+        <div class="c6b-card-head">
+          <div><span>INPUT / 01</span><h2>准备模板与事实材料</h2></div>
+          <span class="c6b-agent-pill">Agent A + L</span>
+        </div>
+
+        <label class="c6b-dropzone c6b-template-zone" id="templateDropzone" for="templateInput">
+          <input id="templateInput" name="template_file" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden />
+          <span class="c6b-file-mark">DOCX</span>
+          <div><strong>协议模板</strong><small>点击或拖放含下划线占位符的 Word 模板</small></div>
+          <span class="c6b-zone-state" id="templateState">未选择</span>
+        </label>
+        <div class="c6b-template-actions" id="templateActions" hidden>
+          <button type="button" id="replaceTemplateBtn">更换模板</button>
+          <button type="button" id="removeTemplateBtn">移除模板</button>
+        </div>
+
+        <label class="c6b-dropzone c6b-material-zone" id="materialsDropzone" for="materialsInput">
+          <input id="materialsInput" name="material_files" type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.jfif,.xlsx,.docx,.csv" hidden />
+          <span class="c6b-file-mark">FILES</span>
+          <div><strong>事实材料</strong><small>PDF、图片/JFIF、XLSX、DOCX 或 CSV，最多 20 份</small></div>
+          <span class="c6b-zone-state" id="materialsState">未选择</span>
+        </label>
+
+        <div class="c6b-file-list" id="selectedFiles"></div>
+        <div class="c6b-upload-note">
+          PDF 与图片将通过 PaddleOCR 识别；XLSX、DOCX 与 CSV 在本地安全读取，不会执行公式或外部链接。
+        </div>
+        <button class="c6b-primary-btn" id="startBtn" type="button" disabled>
+          开始提取并生成字段建议
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14m-6-6 6 6-6 6"/></svg>
+        </button>
+      </section>
+
+      <section class="c6b-card c6b-progress-card" aria-live="polite">
+        <div class="c6b-card-head">
+          <div><span>STATUS / LIVE</span><h2>处理状态</h2></div>
+          <span class="c6b-status-pill" id="statusPill">等待文件</span>
+        </div>
+        <div class="c6b-idle" id="idleState">
+          <div class="c6b-document-glyph" aria-hidden="true"><i></i><b>§</b></div>
+          <strong>证据链将在这里展开</strong>
+          <p>系统会逐份显示提取、摘要和失败重试状态。</p>
+        </div>
+        <div class="c6b-progress" id="progressState" hidden>
+          <div class="c6b-progress-line"><span id="progressFill"></span></div>
+          <p id="progressMessage">正在准备...</p>
+          <div class="c6b-material-status" id="materialStatus"></div>
+          <button class="c6b-secondary-btn" id="retryBtn" type="button" hidden>仅重试失败材料</button>
+        </div>
+        <div class="c6b-error" id="errorState" hidden>
+          <strong>任务未完成</strong><p id="errorMessage"></p>
+        </div>
+      </section>
+    </div>
+
+    <section class="c6b-preflight" id="templatePreflight" hidden aria-labelledby="templatePreflightTitle">
+      <div>
+        <span>TEMPLATE PREFLIGHT</span>
+        <h2 id="templatePreflightTitle">模板结构预检</h2>
+        <p id="templatePreflightSummary"></p>
+      </div>
+      <div class="c6b-preflight-grid" id="templatePreflightDetails"></div>
+    </section>
+
+    <section class="c6b-review" id="reviewPanel" hidden aria-labelledby="reviewTitle">
+      <div class="c6b-review-head">
+        <div>
+          <span>REVIEW / 04</span>
+          <h2 id="reviewTitle">审阅协议字段</h2>
+          <p>展开证据核对 Agent 建议；签署区保持空白。</p>
+        </div>
+        <div class="c6b-review-meta">
+          <span id="fieldCount">0 个字段</span>
+          <span class="warning" id="unresolvedCount">0 个待确认</span>
+        </div>
+      </div>
+      <div class="c6b-conflicts" id="conflictPanel" hidden>
+        <h3>材料冲突</h3>
+        <p>请选择经核对后的值；未解决冲突将阻止生成草案。</p>
+        <div id="conflictList"></div>
+      </div>
+      <div class="c6b-review-groups" id="reviewGroups"></div>
+      <div class="c6b-review-actions">
+        <button class="c6b-secondary-btn" id="saveReviewBtn" type="button">保存字段修订</button>
+        <button class="c6b-primary-btn" id="finalizeBtn" type="button">生成 DOCX 与 PDF</button>
+      </div>
+    </section>
+
+    <section class="c6b-downloads" id="downloadPanel" hidden aria-live="polite">
+      <div class="c6b-complete-mark">✓</div>
+      <div><span>DRAFT READY</span><h2>协议草案已生成</h2><p id="downloadMessage">请在正式使用前完成法律审阅。</p></div>
+      <div class="c6b-download-actions">
+        <button type="button" id="downloadDocxBtn">下载 DOCX</button>
+        <button type="button" id="downloadPdfBtn">下载 PDF</button>
+      </div>
+    </section>
+    <footer class="c6b-footer">草案依据上传材料自动生成，不构成法律意见；请核对金额、日期、责任与签署安排。</footer>
+  </main>
+</div>
+
+<script src="/static/common.js"></script>
+<script src="/static/case6b.js"></script>
+</body>
+</html>

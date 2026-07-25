@@ -38,6 +38,7 @@ const progressRatio = document.getElementById('progressRatio');
 const progressFill  = document.getElementById('progressFill');
 const progressDots  = document.getElementById('progressDots');
 const newChatBtn    = document.getElementById('newChatBtn');
+const resetConversationBtn = document.getElementById('resetConversationBtn');
 const historyList   = document.getElementById('historyList');
 
 // 搜索区
@@ -88,6 +89,11 @@ function generateUUID() {
 
 function getOrCreateScrapeSessionId() {
   if (!scrapeSessionId) scrapeSessionId = generateUUID();
+  const session = getCurrentSession();
+  if (session) {
+    session.backendSessionId = scrapeSessionId;
+    saveSessions();
+  }
   return scrapeSessionId;
 }
 
@@ -98,6 +104,7 @@ function setBusy(val) {
   textInput.disabled = val;
   searchBtn.disabled = val;
   keywordInput.disabled = val;
+  resetConversationBtn.disabled = val;
   updateAnalyzeBtnState();
 }
 
@@ -178,15 +185,11 @@ function renderHistoryList() {
     const title = document.createElement('span');
     title.className = 'history-title';
     title.textContent = s.title;
-
-    const menuBtn = document.createElement('button');
-    menuBtn.className = 'history-menu-btn';
-    menuBtn.title = '更多操作';
-    menuBtn.setAttribute('aria-label', '更多操作');
-    menuBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg>`;
-    menuBtn.addEventListener('click', e => {
-      e.stopPropagation();
-      openHistoryDropdown(s.id, menuBtn, item);
+    title.title = s.title;
+    const menuBtn = createHistoryMenu({
+      label: s.title,
+      isDisabled: () => busy,
+      onDelete: () => deleteSession(s.id),
     });
 
     item.appendChild(title);
@@ -203,17 +206,15 @@ function restoreMessage(msg) {
 }
 
 function switchToSession(id) {
+  if (busy) return;
+  if (id === currentSessionId) return;
   const session = sessions.find(s => s.id === id);
   if (!session) return;
+  resetCurrentView({ preserveHistory: true });
   currentSessionId = id;
   currentConversationId = session.conversationId || null;
-  messagesList.innerHTML = '';
+  scrapeSessionId = session.backendSessionId || null;
   welcome.hidden = session.messages.length > 0;
-  hideProgress();
-  setBusy(false);
-  textInput.value = '';
-  textInput.style.height = 'auto';
-  sendBtn.disabled = true;
   for (const msg of session.messages) restoreMessage(msg);
   renderHistoryList();
 }
@@ -252,13 +253,29 @@ function openHistoryDropdown(sessionId, menuBtn, historyItem) {
   historyItem.classList.add('menu-open');
 }
 
-function deleteSession(id) {
-  if (!confirm('确定删除这条对话记录吗？')) return;
+async function deleteSession(id) {
+  if (busy) return;
+  const target = sessions.find(s => s.id === id);
+  const backendSessionId = target?.backendSessionId || null;
   const wasActive = (id === currentSessionId);
   sessions = sessions.filter(s => s.id !== id);
   saveSessions();
-  if (wasActive) resetCurrentView();
+  if (wasActive) {
+    resetCurrentView();
+    if (sessions.length) switchToSession(sessions[0].id);
+    else createNewSession();
+  }
   renderHistoryList();
+  if (backendSessionId) {
+    try {
+      const response = await fetch(`/pdf/session/${encodeURIComponent(backendSessionId)}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch {
+      toast('对话已从本地删除；服务端缓存将在两小时内自动清理');
+    }
+  }
 }
 
 // ── Case 5：关键词搜索 ────────────────────────────────────────────────────────
@@ -404,6 +421,11 @@ async function startScrape() {
 
   // 创建新的 scrape session（每次搜索重新生成）
   scrapeSessionId = generateUUID();
+  const activeSession = getCurrentSession();
+  if (activeSession) {
+    activeSession.backendSessionId = scrapeSessionId;
+    saveSessions();
+  }
 
   const userMsg = `🔍 搜索关键词：${keyword}`;
   const msgTime = Date.now();
@@ -865,7 +887,8 @@ function extractReply(data) {
 }
 
 // ── 重置当前视图 ──────────────────────────────────────────────────────────────
-function resetCurrentView() {
+function resetCurrentView({ preserveHistory = false } = {}) {
+  const preservedSessionId = preserveHistory ? currentSessionId : null;
   messagesList.innerHTML = '';
   welcome.hidden = false;
   hideProgress();
@@ -893,7 +916,44 @@ function resetCurrentView() {
   if (searchToggle)   searchToggle.hidden = true;
 
   currentConversationId = null;
-  currentSessionId      = null;
+  currentSessionId      = preservedSessionId;
+}
+
+async function resetCurrentConversation() {
+  if (busy) return;
+  const session = getCurrentSession();
+  if (!session) return;
+  const hasContent = (
+    session.messages.length > 0
+    || Boolean(session.backendSessionId)
+    || scrapedResults.length > 0
+    || Boolean(summaryResult)
+    || keywordInput.value.trim().length > 0
+  );
+  if (hasContent && !confirm('确定重置当前对话吗？消息、检索结果和摘要将被清空。')) return;
+
+  const backendSessionId = session.backendSessionId || null;
+  resetCurrentView({ preserveHistory: true });
+  session.messages = [];
+  session.title = '新对话';
+  session.conversationId = null;
+  session.backendSessionId = null;
+  session.updatedAt = Date.now();
+  saveSessions();
+  renderHistoryList();
+
+  if (backendSessionId) {
+    try {
+      const response = await fetch(`/pdf/session/${encodeURIComponent(backendSessionId)}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch {
+      toast('当前对话已重置；服务端缓存将在两小时内自动清理');
+      return;
+    }
+  }
+  toast('当前对话已重置');
 }
 
 // ── 事件绑定 ──────────────────────────────────────────────────────────────────
@@ -938,6 +998,7 @@ newChatBtn.addEventListener('click', () => {
   createNewSession();
   renderHistoryList();
 });
+resetConversationBtn.addEventListener('click', resetCurrentConversation);
 
 // ── 初始化 ────────────────────────────────────────────────────────────────────
 loadSessions();

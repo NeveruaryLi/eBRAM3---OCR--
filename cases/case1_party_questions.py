@@ -22,6 +22,27 @@ from model.config import (
 logger = logging.getLogger(__name__)
 
 
+def _agent_b_user_error(exc: Exception) -> str:
+    """将 Agent B 底层异常映射为不泄露平台细节的用户提示。"""
+    if isinstance(exc, httpx.HTTPStatusError):
+        status_code = exc.response.status_code
+        if status_code in {429, 500, 502, 503, 504}:
+            return (
+                f"综合分析服务暂时不可用（HTTP {status_code}），"
+                "已自动重试但仍未成功，请稍后再试。"
+            )
+        if status_code in {401, 403}:
+            return "综合分析服务配置无效，请联系管理员检查 Agent B。"
+        if status_code == 400:
+            return "综合分析服务未能接受当前材料，请检查文件内容后重试。"
+        return f"综合分析服务请求失败（HTTP {status_code}），请稍后再试。"
+    if isinstance(exc, httpx.TimeoutException):
+        return "综合分析等待超时，请稍后再试。"
+    if isinstance(exc, httpx.RequestError):
+        return "暂时无法连接综合分析服务，请检查网络后重试。"
+    return "综合分析暂时失败，请稍后再试。"
+
+
 class Case1Handler(CaseHandler):
     """Case 1：当事人准备性问题生成。
 
@@ -178,12 +199,23 @@ class Case1Handler(CaseHandler):
                     session_id, party_name, len(analysis_result),
                 )
             except Exception as exc:
-                logger.error("Session %s %s：综合分析失败：%s", session_id, party_name, exc)
+                status_code = (
+                    exc.response.status_code
+                    if isinstance(exc, httpx.HTTPStatusError)
+                    else None
+                )
+                logger.error(
+                    "Session %s %s：综合分析失败，异常类型=%s，HTTP=%s",
+                    session_id,
+                    party_name,
+                    type(exc).__name__,
+                    status_code or "-",
+                )
                 yield SseEvent(
                     type="error",
                     data={
                         "result_key": party_name,
-                        "message": f"综合分析失败：{exc}",
+                        "message": _agent_b_user_error(exc),
                     },
                 )
                 continue

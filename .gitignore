@@ -14,6 +14,7 @@ venv/
 .ruff_cache/
 
 # ── 日志与运行产物 ─────────────────────────────────────────
+output/
 *.log
 server_err.txt
 server_log.txt

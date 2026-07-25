@@ -1,380 +1,593 @@
 # eBRAM AI 文档助手 — 项目交接文档
 
-> **单一权威文档**：本文档反映 main @ a0b0c346、标签 case4-case5-v1.0
-> 的真实代码状态。Case 4 与 Case 5 已包含在该版本中。
-> **最近更新**：2026-07-22 ｜ **维护方式**：功能合并后随代码同步更新
+> 发布基线：`case6a-case6b-v1.0`；更新日期：2026-07-25；已实现：Case 1、2、4、5、6A、6B；未实现：Case 3A / 3B。
 
----
+本文以实际代码为第一事实来源，记录当前系统架构、各 Use Case 的完整数据流、GPTBots Agent 分工、接口、会话状态、限制和后续开发约束。
 
-## 0. 拉取与启动
+## 1. 项目定位
 
-仓库目前为 **Private**。新成员必须先由仓库管理员在 GitHub 添加为 Collaborator，
-并通过 Git Credential Manager、GitHub CLI 或 SSH 完成身份验证。
+eBRAM3 将三类能力组合成法律科技工作台：
 
-~~~text
-# 1. 克隆并进入项目
+1. **识别与采集**：PaddleOCR 处理 PDF/图片，Playwright 检索 HKLII，本地解析 DOCX/XLSX/CSV。
+2. **AI Agent**：通过 GPTBots Agent API 创建 conversation、发送消息、查询 `/v2/messages` 并取得文本或图片结果。
+3. **格式化与交付**：将 OCR/Agent 输入整理为 Markdown 或附件，将输出转换为 Markdown、DOCX 或 PDF。
+
+后端是 Python 3.11 + FastAPI 单体服务；前端是原生 HTML/CSS/JavaScript，没有打包或构建流程。Case 业务通过 Handler 插件化，Case 6A 作为纯文本 RAG 聊天使用独立路由。
+
+## 2. 启动与配置
+
+```powershell
 git clone https://github.com/NeveruaryLi/eBRAM3---OCR--.git
 cd eBRAM3---OCR--
 
-# 2. 创建 Python 3.11 环境（不要使用旧的系统 Python 3.8）
-conda create -n ebram python=3.11 -y
+conda create -n ebram python=3.11
 conda activate ebram
-
-# 3. 安装 Python 依赖
-pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple
-
-# 4. 安装 Case 5 所需的 Chromium（仅首次）
+pip install -r requirements.txt
 playwright install chromium
 
-# 5. 从模板创建本地配置
-# Windows PowerShell
 Copy-Item .env.example .env
-# macOS / Linux
-cp .env.example .env
+uvicorn app:app --reload --port 8000
+```
 
-# 6. 编辑 .env 后启动
-python app.py
-~~~
+### 2.1 环境变量
 
-浏览器入口：<http://localhost:8000>；OpenAPI：<http://localhost:8000/docs>。
-
-### 环境变量
-
-| 变量 | 用途 | 缺失时行为 |
-|---|---|---|
-| api_key | Agent A：Case 1/2 逐页提取 | 阻止服务启动 |
-| AGENT_B_API_KEY | Agent B：Case 1 综合分析 | 阻止服务启动 |
-| PADDLE_OCR_TOKEN | PaddleOCR：Case 1/2 文档 OCR | 阻止服务启动 |
-| AGENT_C_API_KEY | Agent C：Case 2 调解员简报 | Case 2 调用失败，不影响启动 |
-| AGENT_I_API_KEY | Agent I：Case 4 页面图片翻译 | Case 4 明确提示不可用，不影响启动 |
-| AGENT_J_API_KEY | Agent J：Case 5 HKLII 摘要 | Case 5 调用失败，不影响启动 |
-| base_url | GPTBots blocking 消息接口 | 默认新加坡节点 |
-| create_conversation_url | GPTBots 创建对话接口 | 默认新加坡节点 |
-| messages_url | GPTBots 会话详情接口，供 Case 4 取译图 | 默认新加坡节点 |
-| gptbots_user_id | GPTBots 默认用户标识 | 默认 local_user |
-
-真实密钥只保存在本机 .env 或受控 Secret Manager 中；GitHub Actions 使用
-Repository Secrets。不要把密钥写入代码、提交、Issue、PR 或聊天记录。
-
-### 安全状态
-
-旧公开提交历史曾包含真实 .env。仓库改为 Private 只限制后续访问，不能撤销已经被
-复制的凭证；截至本基线，Agent A、Agent B 与 PaddleOCR 的旧凭证尚未完成轮换。
-这些凭证应视为已暴露，出现异常调用时必须立即撤销，长期建议仍是尽快全部轮换。
-
-### 环境注意事项
-
-- Case 1/2/5 的 PDF 报告由 docx2pdf 转换，Windows 需要安装 Microsoft Word；无 Word
-  时可下载 DOCX。Case 4 直接用 PyMuPDF 生成 PDF，不依赖 Word。
-- pip install playwright 不包含浏览器内核，Case 5 首次运行前必须执行
-  playwright install chromium。
-- 当前服务无鉴权，默认只应在可信内网或本机环境运行。
-
----
-
-## 1. 项目定位与版本状态
-
-| 项 | 值 |
-|---|---|
-| 名称 | eBRAM AI 文档助手（内部代号 eBRAM3） |
-| 业务 | 为调解、仲裁与法律文档工作流提供 AI 辅助处理 |
-| 用户 | 仲裁员、调解员、律师及内部运营人员 |
-| 仓库 | NeveruaryLi/eBRAM3---OCR--（Private） |
-| 稳定分支 | main |
-| 当前版本标签 | case4-case5-v1.0 |
-| 启动方式 | python app.py → http://localhost:8000 |
-
-### 技术栈
-
-| 层 | 技术 |
-|---|---|
-| 后端 | Python 3.11、FastAPI、uvicorn、httpx |
-| OCR | PaddleOCR 外部 API（Case 1/2） |
-| AI Agent | GPTBots 新加坡节点，blocking 模式 |
-| PDF / 图片 | PyMuPDF：读取、逐页渲染、译图校验和 PDF 合并 |
-| 报告 | python-docx + docx2pdf（Case 1/2/5） |
-| 爬虫 | Playwright sync API，经线程池桥接 asyncio（Case 5） |
-| 前端 | 原生 HTML/CSS/JS、fetch、SSE、marked.js，无构建流程 |
-| 数据 | 三个进程内字典，无数据库、鉴权或多实例共享 |
-
-### Use Case 总览
-
-| Case | 状态 | 输入与处理 | 输出 / result_key |
+| 变量 | Agent / 服务 | Case | 缺失行为 |
 |---|---|---|---|
-| Case 1 | 已实现、功能锁定 | 双方 PDF → OCR → Agent A → Agent B | 双方问题清单；甲方 / 乙方 / 通用 |
-| Case 2 | 已实现、功能锁定 | 多份调解材料 → OCR → Agent A → Agent C | 调解员简报；调解员简报 |
-| Case 4 | 已发布 | 单份 PDF → PyMuPDF 拆页 → Agent I 译图 → PDF 合并 | 译文 PDF；译文PDF |
-| Case 5 | 已发布 | 关键词 → HKLII 抓取 → Agent J | 案例摘要；HKLII 案例摘要 |
-| Case 3 / 6B | 待开发 | input_example/ 中已有部分样本 | — |
+| `api_key` | Agent A | 1、2、6B | 启动失败 |
+| `AGENT_B_API_KEY` | Agent B | 1 | 启动失败 |
+| `PADDLE_OCR_TOKEN` | PaddleOCR | 1、2、6B | 启动失败 |
+| `AGENT_C_API_KEY` | Agent C | 2 | 仅 Case 2 调用失败 |
+| `AGENT_I_API_KEY` | Agent I | 4 | 仅 Case 4 不可用 |
+| `AGENT_J_API_KEY` | Agent J | 5 | 仅 Case 5 调用失败 |
+| `AGENT_K_API_KEY` | Agent K | 6A | 仅 Case 6A 不可用 |
+| `AGENT_L_API_KEY` | Agent L | 6B | 仅 Case 6B 不可用 |
+| `base_url` | GPTBots 发送消息 | 全部 Agent | 默认新加坡节点 |
+| `create_conversation_url` | GPTBots 创建会话 | 全部 Agent | 默认新加坡节点 |
+| `messages_url` | GPTBots 会话消息详情 | 4、6A、6B 等 | 默认新加坡节点 |
 
-Case 4 与 Case 5 随 case4-case5-v1.0 一起交付。Case 4 不经过 PaddleOCR；页面识别、
-翻译与重新排版由 Agent I 的多模态图片模型完成。
+真实密钥只能写入本地 `.env` 或部署 Secret。不要将密钥写入代码、`.bot`、日志、Issue 或 PR。
 
----
+### 2.2 本地依赖
 
-## 2. 目录结构
+- Case 5：安装 Playwright 后还需执行 `playwright install chromium`。
+- Case 1/2/5：DOCX 由 `python-docx` 生成，PDF 通过 `docx2pdf` 转换，Windows 需要 Microsoft Word。
+- Case 4：PyMuPDF 直接组装 PDF，不依赖 Word。
+- Case 6B：优先使用 LibreOffice headless 将 DOCX 转 PDF，失败后回退 Word/docx2pdf；两者都失败时只提供 DOCX。
+- Case 6A 知识清洗使用 PyMuPDF 和 lxml。
 
-~~~text
-eBRAM3---OCR--/
-├── app.py                         # FastAPI 入口、生命周期、页面路由
-├── requirements.txt               # Python 依赖
-├── .env.example                   # 配置模板；真实 .env 被忽略
-├── api/
-│   ├── pdf_chat.py                # 公共 PDF/SSE/分析/下载/追问与 Session store
-│   ├── case4_routes.py            # Case 4 单 PDF 上传入口
-│   ├── case5_routes.py            # Case 5 HKLII 搜索与抓取 SSE
-│   ├── chat.py                    # 旧 conversation/chat 接口与健康检查
-│   └── graph_route.py             # 旧图表 chat 接口
-├── cases/
-│   ├── base.py                    # CaseHandler + SseEvent 契约
-│   ├── __init__.py                # REGISTRY / get_handler()
-│   ├── case1_party_questions.py
-│   ├── case2_mediator_briefing.py
-│   ├── case4_pdf_translation.py
-│   └── case5_hklii_search.py
-├── model/
-│   ├── config.py                  # Agent/OCR 配置、URL 与请求头
-│   ├── report_generator.py        # DOCX/PDF 报告
-│   ├── pdf_processor.py           # 公共 PDF 工具
-│   ├── schemas.py
-│   └── utils.py
-├── scraper/
-│   └── hklii.py                   # HKLII 搜索、正文抓取及异常类型
-├── static/
-│   ├── index.html                 # Case 选择页
-│   ├── common.js / style.css      # 公共工具与设计令牌
-│   ├── case1.html / case1.js
-│   ├── case2.html / case2.js
-│   ├── case4.html / case4.js / case4.css
-│   ├── case5.html / case5.js
-│   └── fonts/                     # 自托管 Outfit 字体
-├── GPTbots_.bot/
-│   ├── Case4.bot                  # 用户导出的 Agent I 原始配置
-│   └── generated/
-│       ├── build_case4_agent.py   # 可重复生成脚本
-│       ├── Case4-Agent-I.bot      # 已校验生成物
-│       ├── overview.md            # Agent I 设计与 POC 记录
-│       └── prompts/AI Model-1.md  # Agent I 运行 Prompt
-├── tests/
-│   ├── test_case4_agent_builder.py
-│   └── test_case4_backend.py
-├── docs/HANDOVER.md               # 本文件，项目权威交接说明
-└── input_example/                 # 客户/测试样本，不是运行时依赖
-~~~
+## 3. 总体架构
 
----
+```mermaid
+flowchart TB
+    Browser["Case 页面<br/>Vanilla HTML/CSS/JS"] --> App["FastAPI app.py"]
+    App --> PDFRoutes["公共 PDF / SSE 路由"]
+    App --> Dedicated["Case 4/5/6A/6B 专属路由"]
+    PDFRoutes --> Registry["CaseHandler Registry"]
+    Dedicated --> Registry
+    Dedicated --> C6A["Case 6A 会话服务"]
+    Registry --> C1["Case 1 Handler"]
+    Registry --> C2["Case 2 Handler"]
+    Registry --> C4["Case 4 Handler"]
+    Registry --> C5["Case 5 Handler"]
+    Registry --> C6B["Case 6B Handler"]
+    C1 & C2 & C6B --> OCR["PaddleOCR"]
+    C1 & C2 & C4 & C5 & C6A & C6B --> GPTBots["GPTBots Agents"]
+    C5 --> HKLII["Playwright / HKLII"]
+    Registry --> Store["内存 Session / Result Store"]
+```
 
-## 3. 核心架构契约
+### 3.1 目录
 
-### 3.1 CaseHandler 与 Registry
+```text
+app.py
+api/
+  pdf_chat.py             公共上传、分析、报告、追问和 Session 删除
+  case4_routes.py         Case 4 单 PDF 上传
+  case5_routes.py         Case 5 HKLII 搜索与抓取 SSE
+  case6a_routes.py        Case 6A 私有会话映射和文本问答
+  case6b_routes.py        Case 6B 上传、重试、审阅和 finalize
+cases/
+  base.py                 CaseHandler + SseEvent 契约
+  __init__.py             Registry / Factory
+  case1_*.py              Case 1
+  case2_*.py              Case 2
+  case4_*.py              Case 4
+  case5_*.py              Case 5
+  case6b_*.py             Case 6B
+model/                    配置、数据模型和 GPTBots/PDF 公共工具
+scraper/                  HKLII Playwright 抓取
+static/                   首页及 Case 1/2/4/5/6A/6B 页面
+Case_6A_KB/               官网知识库构建源码与 28 份 Markdown
+GPTbots_.bot/             Agent I/K/L 原始配置、生成文件、Prompt、评估
+tests/                    99 项自动化测试
+tools/                    Case 6B E2E / smoke 工具
+input_example/            客户样例
+```
 
-所有业务 Case 实现 cases/base.py 的四个方法：
-
-| 方法 | 责任 | 返回 |
-|---|---|---|
-| analyze() | 调用外部能力、写结果并逐步产出事件 | AsyncGenerator[SseEvent, None] |
-| generate_report() | 生成可下载文件 | (file_bytes, filename, media_type) |
-| followup_chat() | 上下文追问；不支持时明确拒绝 | conversation_id + reply |
-| get_downloadable_keys() | 返回已成功写入结果仓库的键 | list[str] |
+### 3.2 Handler Registry
 
 当前 Registry：
 
-~~~python
+```python
 REGISTRY = {
     "case1": Case1Handler,
     "case2": Case2MediatorBriefingHandler,
     "case4": Case4PdfTranslationHandler,
     "case5": Case5HkliiSearchHandler,
+    "case6b": Case6BDraftingHandler,
 }
-~~~
+```
 
-结果必须先写入 session_results_store，再发送对应 result 事件，保证前端收到事件后
-可以立即下载。
+每个 Handler 实现：
 
-### 3.2 SSE 事件边界
+- `analyze()`
+- `generate_report()`
+- `followup_chat()`
+- `get_downloadable_keys()`
 
-POST /pdf/session/analyze 的路由生命周期事件：
+Case 6A 不处理文件或报告，因此不加入 Registry。
 
-- analyze_start
-- Handler 透传的 progress / result / 局部 error
-- 正常结束时 analyze_complete
-- 未捕获异常时 fatal_error，随后关闭流
+### 3.3 SSE 契约
 
-Handler 的 SseEvent.data 由各 Case 自治；result.result_key 必须与
-get_downloadable_keys() 一致。
+`POST /pdf/session/analyze` 使用 SSE：
 
-Case 5 的 /case5/scrape 另有 progress、scrape_complete、no_results、
-search_timeout 和 error 事件。
+- 路由事件：`analyze_start`、`analyze_complete`、`fatal_error`
+- Handler 事件：`progress`、`result`、`error`
 
-### 3.3 Session 数据流
+`result.result_key` 必须与 `get_downloadable_keys()` 一致，且结果必须先写入 `session_results_store`，再发送 `result`。
 
-| Store | 当前内容 |
+各 Case result key：
+
+| Case | result key |
 |---|---|
-| session_store | Case 1/2 文档结果、Case 4 Case4PdfDocument、Case 5 ScrapedResult |
-| session_metadata | case_type 及文件名、页数、方向或搜索关键词 |
-| session_results_store | 最终结果、conversation id、创建时间与报告数据 |
+| 1 | `甲方`、`乙方` 或 `通用` |
+| 2 | `调解员简报` |
+| 4 | `译文PDF` |
+| 5 | `HKLII 案例摘要` |
+| 6B | `协议草案` |
 
-_get_handler() 优先读取 session_metadata.case_type，其次读取最终结果中的
-case_type，最后仍保留 case1 兼容 fallback。
+### 3.4 Session
 
-后台每 30 分钟扫描一次，带 created_at 且超过两小时的 Case 1/2/4 会话会被清理。
-ScrapedResult 没有 created_at，Case 5 目前会跳过 TTL，是已登记技术债务。
+公共状态使用进程内字典：
 
-### 3.4 主要路由
+- `session_store`：上传材料、OCR 结果或 Case 专属对象。
+- `session_results_store`：分析文本、Agent conversation 和生成文件。
+- `session_metadata`：`case_type`、方向、关键词等。
+- Case 6A/6B 另有专属 Session 对象与并发锁。
 
-| 方法 | 端点 | 说明 |
+默认 TTL 为两小时。应用重启会清空全部状态，不支持数据库持久化、多实例共享或恢复。
+
+## 4. Agent 与外部能力
+
+| 代号 | 环境变量 | 职责 |
 |---|---|---|
-| GET | /、/case1、/case2、/case4、/case5 | 页面入口 |
-| POST | /pdf/pages/chat | Case 1/2：上传、OCR、Agent A 逐页处理 |
-| POST | /case4/session/upload | Case 4：校验并暂存单份 PDF 与方向 |
-| POST | /case5/scrape | Case 5：搜索 HKLII 并抓取正文（SSE） |
-| POST | /pdf/session/analyze | 按 case_type 调用 Handler（SSE） |
-| POST | /pdf/session/report | 下载报告；参数名 party 实际承载 result_key |
-| POST | /pdf/session/chat | 追问；Case 4 明确拒绝 |
-| POST | /pdf/chat | 旧整份 PDF 处理端点 |
-| GET | /health | 健康检查 |
-| POST | /conversation、/chat、/graph/chat | 旧兼容接口，非新 Case 主路径 |
+| Agent A | `api_key` | Case 1/2 OCR 后逐页处理；Case 6B 每份材料结构化摘要 |
+| Agent B | `AGENT_B_API_KEY` | Case 1 分方综合分析和问题清单 |
+| Agent C | `AGENT_C_API_KEY` | Case 2 调解员简报 |
+| Agent I | `AGENT_I_API_KEY` | Case 4 页面图片双向翻译 |
+| Agent J | `AGENT_J_API_KEY` | Case 5 HKLII 案例摘要 |
+| Agent K | `AGENT_K_API_KEY` | Case 6A eBRAM 官网 RAG 服务指导 |
+| Agent L | `AGENT_L_API_KEY` | Case 6B 模板字段解析和事实填充 |
 
-### 3.5 GPTBots 调用约定
+GPTBots 发送消息使用 `messages[].content[]`。文档附件使用：
 
-Case 1/2/5 的文档附件必须使用数组结构：
-
-~~~python
-{"type": "document", "document": [doc_item]}
-~~~
-
-Case 4 每次发送一页图片：
-
-~~~python
+```json
 {
-    "response_mode": "blocking",
-    "messages": [{
-        "role": "user",
-        "content": [
-            {"type": "text", "text": "方向和页码指令"},
-            {"type": "image", "image": [{
-                "base64_content": "...", "format": "png", "name": "page_0001.png"
-            }]},
-        ],
-    }],
-    "conversation_config": {"short_term_memory": False, "long_term_memory": False},
+  "type": "document",
+  "document": [{
+    "base64_content": "...",
+    "format": "md",
+    "name": "source.md"
+  }]
 }
-~~~
+```
 
-| Agent | 配置变量 | 职责 | Case |
-|---|---|---|---|
-| Agent A | api_key | PDF 逐页摘要与结构化字段 | 1 / 2 |
-| Agent B | AGENT_B_API_KEY | 双方争议综合分析 | 1 |
-| Agent C | AGENT_C_API_KEY | 调解员简报 | 2 |
-| Agent I | AGENT_I_API_KEY | 英文与繁体中文页面图片双向翻译 | 4 |
-| Agent J | AGENT_J_API_KEY | HKLII 案例摘要 | 5 |
+图片附件使用 `type=image` 和 `image:[item]`。Agent 调用默认 `response_mode=blocking`；当投递结果不确定时先查询 `/v2/messages`，避免重复发送。
 
----
+## 5. 各 Case 完整逻辑
 
-## 4. 各 Case 实现要点
+### 5.1 Case 1 — 当事人谈判问题生成
 
-### Case 1 — 双方谈判问题生成
+**页面**：`/case1`
 
-- 甲乙方 PDF 分别上传，party 决定归属；PaddleOCR 后由 Agent A 逐页处理。
-- Handler 按方合并材料并调用 Agent B；可部分成功。
-- result_key 为甲方、乙方或通用。
-- 支持 DOCX/PDF 下载和上下文追问。
+**输入**：一份或多份 PDF，每份标记甲方、乙方或通用。
 
-### Case 2 — 调解员简报
+**Agent**：A、B。
 
-- 多份材料可标记为甲方、乙方或通用；OCR/Agent A 后按 party 合并。
-- Agent C 生成一份 Markdown 简报，result_key 为调解员简报。
-- 支持 DOCX/PDF 下载和上下文追问。
+```text
+PDF
+→ PaddleOCR
+→ Agent A 逐页处理
+→ 按 party 暂存
+→ 通用材料分别并入甲乙方
+→ Agent B 为每方建立独立 conversation
+→ 问题清单
+→ DOCX/PDF/追问
+```
 
-### Case 4 — 双语 PDF 页面翻译
+处理特点：
 
-上传接口：
+- 甲方和乙方串行综合分析，conversation 相互隔离。
+- 如果只有通用材料，产出 `result_key="通用"`。
+- 单方 Agent B 失败时，另一方成功结果仍可下载。
+- Agent B 对 429、超时和 5xx 进行有限重试；用户错误不暴露平台 URL。
+- 首次追问会建立对话并注入分析结果，之后复用 conversation。
 
-~~~text
-POST /case4/session/upload
-pdf_file: PDF
-direction: en_to_zh_tw | zh_tw_to_en
-~~~
+### 5.2 Case 2 — 调解员简报
 
-接口返回 session_id、filename、page_count 和 direction。校验规则：单文件、
-PDF 魔数、非空、可读取、未加密、最大 25 MB、最多 30 页。
+**页面**：`/case2`
 
-处理链：
+**输入**：一份或多份 PDF，每份标记甲方、乙方或通用。
 
-1. PyMuPDF 将页面渲染为 RGB、无透明通道的 PNG，默认 150 DPI。
-2. 单页超过 9.5 MB 时依次降至 120、96 DPI；仍超限则整份失败。
-3. 整份 PDF 只创建一个 Agent I conversation，页面按顺序串行发送。
-4. 优先解析 blocking 响应里的 URL/base64；没有图片时查询 /v2/messages，只选择
-   Assistant 的 branch_content[].image[]，绝不选择用户上传的原图。
-5. GPTBots 临时 URL 必须是官方 HTTPS 域名；译图最大 20 MB，并验证 PNG/JPEG/WebP
-   文件头、尺寸和可解码性。
-6. 会话详情若返回 /thumbnail/ URL，先尝试去除该路径取得原始译图；只有原图下载
-   失败时才回退缩略图。当前样例原图为 864×1222，缩略图为 566×800。
-7. 429、500、502、503、504、超时和传输错误最多尝试三次；每次页面调用超时 300 秒。
-8. 所有译图完成后，按原始页数、页序和页面尺寸居中铺放到白色页面并生成 PDF。
+**Agent**：A、C。
 
-任一页最终失败则不生成部分 PDF。Case 4 的唯一 result_key 是译文PDF，只支持
-PDF 下载，不显示聊天输入，也拒绝 /pdf/session/chat 追问。
+```text
+PDF
+→ PaddleOCR
+→ Agent A 逐页处理
+→ 按 CLAIMANT / RESPONDENT / COMMON 合并 Markdown
+→ Agent C
+→ 调解员简报
+→ DOCX/PDF/追问
+```
 
-Agent I 源文件与 POC 记录位于 GPTbots_.bot/。当前测试模式版本为 v1.0.3，记忆、
-用户属性、工具和推理展示均关闭，输出类型固定为 Image。生成式图片翻译仍可能对复杂
-表格、密集条款、印章、手写内容或产品名产生偏差，必须由人工复核。
+Case 2 固定产生一份 `调解员简报`。追问使用 Agent C，并在新 conversation 中注入简报上下文。
 
-### Case 5 — HKLII 案例检索
+### 5.3 Case 3A / 3B
 
-- /case5/scrape 先搜索 HKLII，再以最多三个正文抓取并发任务处理前 10 条结果。
-- Playwright sync API 通过全局线程池运行，避免阻塞 asyncio 事件循环。
-- 抓取结果写入 Session 后，由 Agent J 生成 HKLII 案例摘要。
-- 支持 DOCX/PDF 下载和基于 Agent J conversation 的追问。
-- 无结果和搜索超时分别返回 no_results、search_timeout，不进入摘要阶段。
+当前只有 `input_example/Usecase 3A and 3B` 客户样例。没有：
 
----
+- 首页卡片和独立页面
+- FastAPI 路由
+- CaseHandler
+- Agent 配置或 API Key
+- 自动化测试
 
-## 5. 前端与设计基线
+后续开发不得把样例存在误写为功能已实现。
 
-- 原生 HTML/CSS/JS，无构建流程；fetch() 消费 SSE，marked.js 渲染 Markdown。
-- 保持 248px 左侧导航、Outfit 字体、深浅主题、卡片边框和克制的法律科技视觉。
-- Case 4 使用低饱和铜金色和“拆页 → 翻译 → 合并”三阶段进度，不显示聊天输入框。
-- Case 1/2/5 保留上传或搜索、分析结果、报告下载和追问流程。
-- 新 Case 应新增独立页面和 Handler，但复用公共设计令牌、Session 与 SSE 契约。
-- 动效只表达状态，并兼容 prefers-reduced-motion；移动端不能依赖固定侧栏宽度。
+### 5.4 Case 4 — PDF 图片翻译
 
----
+**页面**：`/case4`
 
-## 6. 测试与调试
+**上传**：`POST /case4/session/upload`
 
-当前自动化测试集中覆盖 Case 4，共 18 项：
+**Agent**：I。
 
-~~~powershell
-python -m unittest discover -s tests -v
+**输入**：一份 PDF，方向为 `en_to_zh_tw` 或 `zh_tw_to_en`。
+
+```text
+PDF 校验
+→ PyMuPDF 读取原页尺寸
+→ 150 DPI RGB PNG
+→ 过大时降到 120 / 96 DPI
+→ 同一 Agent I conversation 串行逐页翻译
+→ blocking 响应或 /v2/messages 取得图片
+→ 优先原图 URL，失败时缩略图
+→ 校验并按原页尺寸居中铺放
+→ 译文 PDF
+```
+
+约束：
+
+- PDF 最大 25 MB、30 页。
+- 单页发送图片最大 9.5 MB，Agent 输出图片最大 20 MB。
+- 每页最长 300 秒；429、超时、5xx 最多三次尝试。
+- 400、401、403 不重试。
+- 任一页最终失败则整份失败。
+- 不使用 PaddleOCR，不支持 DOCX，不支持追问。
+- 页面没有聊天历史。
+
+Agent I 生成配置和 Prompt 位于 `GPTbots_.bot/generated/`。测试模式记录为 `v1.0.3`。
+
+### 5.5 Case 5 — HKLII 案例检索
+
+**页面**：`/case5`
+
+**入口**：`POST /case5/scrape`
+
+**Agent**：J。
+
+```text
+关键词
+→ Playwright 搜索 HKLII
+→ 最多 10 条结果
+→ 并发抓取案例正文
+→ 整理为 Markdown 附件
+→ Agent J
+→ HKLII 案例摘要
+→ DOCX/PDF/追问
+```
+
+正文单条超过安全字符限制时截断。搜索无结果会发送 `no_results`，爬取过程使用专属 SSE 进度事件。
+
+已知问题：`ScrapedResult` 没有 `created_at`，后台 TTL 扫描会跳过 Case 5；用户重置或删除会话仍会调用公共 Session 删除接口。
+
+### 5.6 Case 6A — eBRAM 服务指导助手
+
+**页面**：`/case6a`
+
+**用户名称**：eBRAM 服务指导助手 / eBRAM Service Assistant
+
+**内部 Agent**：K。
+
+知识库：
+
+- 测试知识库：`eBRAM Website Support KB (Case 6A Test) r2`
+- 28 份可用文档
+- 来源仅限 eBRAM 官网页面或官方附件
+- 新闻、活动、招聘、视频、动态个人名册和无关研究默认排除
+- Hybrid Search、Top K 5、阈值 0.76、query enhancement 和 rerank 开启
+- 测试模式 Agent K：`v1.0.5`
+
+```text
+新建应用 Session
+→ 服务端创建 GPTBots conversation
+→ 浏览器只接收随机 Session ID
+→ 用户发送纯文本问题
+→ Agent K 检索官网知识
+→ blocking 返回
+→ 若无正文，轮询 /v2/messages 的本轮新增 Assistant 消息
+→ 返回 Markdown 回答
+```
+
+规则：
+
+- 每条消息 1–4000 字符。
+- Session 两小时 TTL。
+- 同一 Session 复用 conversation；不同 Session 相互隔离。
+- 同一 Session 使用独立锁，并发发送返回 `SESSION_BUSY`。
+- short-term memory 开启，long-term memory 关闭。
+- 回答支持英文和繁体中文，提供一至两个官方来源。
+- 官网无充分资料时提供经核验的 Contact Us 引导；离题问题不编造。
+- 不提供附件、报告、OCR 或法律意见。
+- `/v2/messages` 回退只查询，不重新发送问题；异常投递会污染当前 Session 并要求开启新对话。
+
+知识库源码：
+
+- `Case_6A_KB/build_case6a_kb.py`：受控抓取和清洗。
+- `Case_6A_KB/docs/`：28 份上传 Markdown。
+- `Case_6A_KB/source_manifest.csv`：来源与内容哈希。
+- `GPTbots_.bot/generated/case6a/sync_case6a_kb.py`：Knowledge API 同步、向量状态和检索验收。
+- `.cache`、`upload-state.json`、远端 ID 和原始评估响应不提交。
+
+### 5.7 Case 6B — 服务协议草案生成
+
+**页面**：`/case6b`
+
+**Handler**：`Case6BDraftingHandler`
+
+**Agent**：A、L。
+
+**Agent L 测试模式**：`v1.0.9`。
+
+#### 上传
+
+- 模板：仅 DOCX，最大 10 MB。
+- 材料：1–20 份。
+- 支持 PDF、PNG、JPG、JPEG、JFIF、XLSX、DOCX、CSV。
+- PDF/图片最大 25 MB；XLSX/DOCX/CSV 实际按 10 MB 限制。
+- 总上传最大 100 MB。
+- 单个 PDF 最多 30 页。
+- PDF 页与图片合计最多 60 个 OCR 单元。
+- XLSX 最多 20 个可见工作表和 10,000 个有效单元格。
+- 不接受 PDF 模板，不接受可选表单 JSON。
+
+浏览器待上传阶段可移除、更换模板，也可追加或删除材料；点击开始分析后文件列表锁定。需要换文件时必须重置当前任务。
+
+#### 模板扫描
+
+应用本地确定性扫描：
+
+- 连续下划线，包括跨 Word Run 的占位符。
+- `[Provider_Name]`、`[Effective Date]` 等方括号占位符。
+- 正文和表格位置。
+- 表头、前后文、重复行和签署区候选。
+- 为每个实际位置生成稳定 `field_id` 和回填 locator。
+
+同名占位符多次出现时保留不同位置。模板没有可识别占位符，或包含内容控件、文本框、邮件合并域、复杂浮动对象等无法稳定回填的结构时拒绝处理。
+
+模板预检是自动、只读诊断，不使用客户专属模板档案，也不要求用户选择 profile。
+
+#### 材料处理
+
+```text
+PDF → PaddleOCR
+PNG/JPG/JFIF → 无损封装单页 PDF → PaddleOCR
+XLSX → openpyxl 提取工作表、单元格和公式文本
+DOCX → 本地提取段落与表格
+CSV → 本地提取行列
+→ 每份材料独立 Agent A conversation
+→ 结构化事实、原始值、规范化值和证据位置
+→ 按文件顺序组装 full_summary
+```
+
+任何材料失败都会阻止 Agent L 草案阶段，但成功材料结果保留。`POST /case6b/session/{id}/retry` 只处理指定失败材料。
+
+#### Agent L 两阶段契约
+
+FlowAgent 路由条件为 `sys_user_msg_count < 1`。GPTBots 在处理当前消息前计算该值：
+
+- 第一轮计数 0，进入模板解析模型。
+- 第二轮计数 1，进入字段填充模型。
+
+第一轮发送：
+
+1. 一段短文本，说明两个附件分别是什么、要求读取全部字段并只返回 JSON。
+2. 原始 DOCX 模板。
+3. `case6b_template_context.md`，包含阶段标记、字段、locator、上下文、重复区块和 JSON 契约。
+
+第二轮发送：
+
+1. 一段短文本，说明附件包含第一轮字段清单与材料证据，并要求只返回填充 JSON。
+2. `case6b_field_fill_context.md`，包含阶段标记、完整 `field_list`、`full_summary`、冲突、原始值和规范化值。
+
+关键数据完全包含在 Markdown 附件中。短期记忆只辅助上下文，不作为唯一状态来源。
+
+Agent L 必须：
+
+- 第一轮返回全部已检测 `field_id`，不得新增、删除或修改 locator。
+- 第二轮为每个字段恰好返回一次结果。
+- 只使用 `FILLED`、`NEEDS_CONFIRMATION`、`REMOVE`、`LEAVE_BLANK`、`KEEP_BLANK`。
+- 填充值必须带证据。
+- 缺失或冲突不得推测。
+- 重复服务行使用 `included`、`optional`、`blank`、`remove`。
+- 个人姓名、签名和签署日期保持空白；签署方公司名称可填写。
+
+如果发送超时或 5xx，应用先查询会话消息确认是否已生成回复。无法确认阶段结果时创建新 conversation，并按第一、第二轮顺序重放，避免计数路由错位。
+
+#### 审阅和生成
+
+分析完成后返回 `result_key="协议草案"`，但 finalize 前不可下载。
+
+- Review 带版本号，PATCH 旧版本返回冲突，防止覆盖新状态。
+- 用户可修改所有非签名字段。
+- 人工修改标记为 `USER_CONFIRMED`，保留 Agent 原值和审计信息。
+- 未解决事实冲突阻止 finalize。
+- 普通 `NEEDS_CONFIRMATION` 字段允许在二次确认风险后生成，并用黄色 `[TO BE CONFIRMED]` 或 `[待確認]` 标记。
+- 服务名称与价格必须成对保留、留空或删除。
+- 修改 Review 后旧生成文件失效。
+
+文档生成在原模板内存副本上按 locator 替换，不重建整个模板。未使用服务行从 OOXML 完整删除；固定条款、字体、表格、页边距、页眉页脚和签署区尽量保留。
+
+输出：
+
+- `原模板名_服务协议草案.docx`
+- `原模板名_服务协议草案.pdf`
+
+Case 6B 不支持结果追问。
+
+## 6. 接口
+
+### 页面
+
+| 方法 | 路径 |
+|---|---|
+| GET | `/` |
+| GET | `/case1` |
+| GET | `/case2` |
+| GET | `/case4` |
+| GET | `/case5` |
+| GET | `/case6a` |
+| GET | `/case6b` |
+
+### 公共 PDF / Handler
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| POST | `/pdf/pages/chat` | Case 1/2 上传、OCR、Agent A |
+| POST | `/pdf/session/analyze` | Case 1/2/4/5/6B SSE 分析 |
+| POST | `/pdf/session/report` | DOCX/PDF 下载 |
+| POST | `/pdf/session/chat` | Case 1/2/5 追问 |
+| DELETE | `/pdf/session/{session_id}` | 幂等删除公共 Session |
+
+`/pdf/chat`、`/conversation`、`/chat` 和 `/graph/chat` 是旧兼容接口，不应作为新增 Case 的首选入口。
+
+### Case 4 / 5
+
+| 方法 | 路径 |
+|---|---|
+| POST | `/case4/session/upload` |
+| POST | `/case5/scrape` |
+
+### Case 6A
+
+| 方法 | 路径 |
+|---|---|
+| POST | `/case6a/session` |
+| POST | `/case6a/session/chat` |
+| DELETE | `/case6a/session/{session_id}` |
+
+### Case 6B
+
+| 方法 | 路径 |
+|---|---|
+| POST | `/case6b/session/upload` |
+| GET | `/case6b/session/{session_id}/template` |
+| POST | `/case6b/session/{session_id}/retry` |
+| GET | `/case6b/session/{session_id}/review` |
+| PATCH | `/case6b/session/{session_id}/review` |
+| POST | `/case6b/session/{session_id}/finalize` |
+| DELETE | `/case6b/session/{session_id}` |
+
+## 7. 前端与交互
+
+设计基线：
+
+- 248px 左侧导航、Outfit 字体、深浅主题、克制的法律科技视觉。
+- Case 4 使用低饱和铜金色。
+- Case 6A 使用低饱和青绿色。
+- Case 6B 使用低饱和靛青色。
+- 桌面端和 390px 移动端布局。
+- 支持 `prefers-reduced-motion`、键盘焦点和 `aria-live`。
+
+历史：
+
+- Case 1：`ebram_history`
+- Case 2：`ebram_c2_history`
+- Case 5：`ebram_c5_history`
+- Case 6A：`ebram_c6a_history`
+- Case 6B：`ebram_c6b_history`
+- Case 4 无历史。
+
+Case 1、2、5、6A、6B 使用统一三点菜单删除当前或历史会话，并提供“重置当前对话/任务”。删除服务端 Session 失败时，本地历史仍删除，服务器状态等待 TTL 清理。
+
+安全渲染：
+
+- 用户文本使用 `textContent`。
+- Agent Markdown 应经过 DOMPurify 清洗。
+- Case 6A 来源链接只允许 HTTPS 的 `ebram.org` 及其子域，并添加 `noopener noreferrer`。
+
+## 8. 测试和验收状态
+
+命令：
+
+```powershell
+conda run -n ebram python -m unittest discover -s tests -v
+node --check static\case1.js
+node --check static\case2.js
 node --check static\case4.js
-python C:\Users\<user>\.agents\skills\gptbots-agent-skill\scripts\validate_gptbots_config.py GPTbots_.bot\generated\Case4-Agent-I.bot --json
-~~~
+node --check static\case5.js
+node --check static\case6a.js
+node --check static\case6b.js
+```
 
-覆盖内容包括 Agent .bot 生成、上传校验、25 MB/30 页边界、加密与损坏 PDF、payload、
-blocking/base64/会话详情图片解析、官方 URL 校验、原图回退、重试、DPI 降级、PDF 页序
-与尺寸、PDF-only 下载及拒绝追问。
+当前自动化基线为 99 项 Python 测试，覆盖：
 
-调试原则：
+- Case 1 Agent B 重试和错误脱敏。
+- Case 4 Agent 配置、PDF 校验、图片解析、DPI 降级和 PDF 合并。
+- Case 6A Agent 身份、Session、blocking/messages 回退、会话隔离和前端安全。
+- Case 6A 官网知识清洗和问题覆盖。
+- Case 6B 模板、材料、Agent L 两阶段、审阅、冲突、DOCX 回填、PDF 降级和前端。
+- Case 1/2/5/6A/6B 会话重置和删除。
 
-- 先复现并写失败测试，再修复；外部 Agent 的真实响应应脱敏后固化为契约样例。
-- 排查 DOM 时序可临时使用 headless=False，但提交代码保持生产默认。
-- Playwright 等待优先使用互斥 selector，避免无结果页面一直等待单一 selector。
-- docx2pdf 在 CI 或无 Word 环境可能失败，测试应验证 DOCX 降级路径。
+外部验收记录：
 
----
+- Agent K 测试模式 `v1.0.5`：2026-07-23 完成问题集、多轮、繁体中文和隔离验收。
+- Agent L 测试模式 `v1.0.9`：2026-07-24 完成 37/37 模板字段和 37/37 填充结果双阶段 POC。
 
-## 7. 已知限制与下一步
+这些记录不等同于生产 SLA。PaddleOCR、GPTBots、HKLII、LibreOffice 和 Word 都是外部或本机依赖。
 
-- **凭证风险**：旧公开历史中的 Agent A、Agent B 与 PaddleOCR 凭证尚未轮换。
-- **持久化与多实例**：Session 全在进程内，服务重启即丢失，也不能跨 worker 共享。
-- **Case 5 TTL**：ScrapedResult 没有 created_at，当前清理任务会跳过 Case 5。
-- **鉴权**：当前没有登录、权限控制或租户隔离，不应直接暴露到公网。
-- **测试覆盖**：Case 1/2/5 缺少系统化自动回归和视觉基线。
-- **前端安全**：AI Markdown 通过 marked.js 写入页面，尚未增加显式 HTML 清洗。
-- **依赖与环境**：DOCX 转 PDF 依赖本机 Word；HKLII 依赖站点结构和网络可达性。
-- **后续 Case**：Case 3/6B 尚未实现；新增时遵守 Handler、Registry、Session 和 SSE 契约。
-- **仓库体积**：input_example/ 包含大量二进制样本，可后续迁移至 Git LFS 或独立样本仓库。
+## 9. 已知限制与技术债务
 
-文档维护规则：每次功能 PR 合并时，同时核对 README、本文档、.env.example、依赖注释、
-路由表和 Case 状态；代码实现永远是最终事实来源。
+1. **凭证风险**：仓库已改为 Private，但旧公开 Git 历史曾包含真实 Agent A、Agent B 和 PaddleOCR 凭证，且尚未轮换。
+2. **内存 Session**：服务重启丢失数据，不支持数据库、多实例共享、用户鉴权或持久化恢复。
+3. **Case 5 TTL**：`ScrapedResult` 缺少 `created_at`，自动清理会跳过 Case 5。
+4. **Case 3**：Case 3A/3B 未实现。
+5. **外部稳定性**：GPTBots、PaddleOCR、HKLII 页面结构或临时资源 URL 变化会影响结果。
+6. **报告转换**：DOCX 转 PDF 依赖 LibreOffice 或 Microsoft Word。
+7. **Case 4 模型质量**：译图可能出现字体、布局或识别偏差，必须人工复核。
+8. **Case 6A 内容时效**：知识库是官网快照，需定期按 Sitemap 和来源清单增量更新。
+9. **Case 6B Word 范围**：仅支持普通段落和表格中的下划线/方括号占位符，不支持复杂 Word 对象。
+10. **自动化范围**：现有测试以契约和单元测试为主，尚缺统一 CI、覆盖率阈值和全站视觉回归。
+
+## 10. 后续开发规则
+
+- 新文件处理 Case 优先新增 Handler 并注册唯一 `case_type`。
+- 只有输入链完全不同才新增 Case 专属上传入口。
+- 不修改已锁定 Case 行为，除非有明确需求或公共缺陷。
+- Agent Prompt、`.bot` 和知识库源文件使用生成脚本维护，不直接手改生成 JSON。
+- Agent 关键输入使用结构化 Markdown/附件，避免仅依赖 conversation memory。
+- 结果先落 Session，再发送 SSE `result`。
+- 新页面复用全局设计令牌、主题、历史菜单、重置和错误语言。
+- 不提交 `.env`、真实密钥、日志、缓存、客户输出、GPTBots conversation ID 或运行时上传状态。
+- 发布采用 feature 分支 → 测试 → PR → merge commit → tag，不直接在 `main` 开发。
