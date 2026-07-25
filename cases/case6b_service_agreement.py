@@ -715,10 +715,16 @@ def build_agent_l_template_payload(
     context = build_template_context_markdown(template, manifest)
     guidance = (
         "[CASE6B_PHASE:TEMPLATE_PARSE]\n"
-        f"Attachment 1, {template.filename}, is the original DOCX agreement template. "
+        f"The first document attachment (DOCX; logical name `{template.filename}`) "
+        "is the original agreement template. "
         "Use it only to understand the document layout and surrounding clauses. "
-        "Attachment 2, case6b_template_context.md, contains the application-detected "
-        "placeholders, stable field IDs, locators, and the required output schema. "
+        "The second document attachment (Markdown; logical name "
+        "`case6b_template_context.md`; document role `template_context`) contains "
+        "the application-detected placeholders, stable field IDs, locators, and the "
+        "required output schema. GPTBots may replace base64 attachment filenames with "
+        "generated names in the conversation log. Do not rely on the filenames shown "
+        "by the platform; identify both documents by attachment order, format, phase "
+        "marker, and the Markdown document-identity header. "
         "Read both attachments together, explain every detected field without adding, "
         "removing, reordering, or filling any field, and return exactly one JSON Object "
         "that follows the Markdown contract. Do not return commentary or Markdown fences."
@@ -771,8 +777,13 @@ def build_agent_l_fill_payload(
     context = build_field_fill_context_markdown(field_list, full_summary)
     guidance = (
         "[CASE6B_PHASE:FIELD_FILL]\n"
-        "The attachment case6b_field_fill_context.md contains the complete field list "
-        "from the first stage and the evidence summary extracted from all source files. "
+        "The only document attachment (Markdown; logical name "
+        "`case6b_field_fill_context.md`; document role `field_fill_context`) contains "
+        "the complete field list from the first stage and the evidence summary extracted "
+        "from all source files. GPTBots may replace the base64 attachment filename with "
+        "a generated name in the conversation log. Do not rely on the filename shown by "
+        "the platform; identify the document by its phase marker and document-identity "
+        "header. "
         "Treat the attachment as the sole source of field IDs and factual values. "
         "Fill every listed field once, preserve evidence references, mark unsupported "
         "facts with the allowed non-filled status, and return exactly one JSON Object "
@@ -834,6 +845,13 @@ def build_template_context_markdown(
         "",
         "# Case 6B template context",
         "",
+        "## Document identity",
+        "",
+        "- logical_filename: `case6b_template_context.md`",
+        "- document_role: `template_context`",
+        "- attachment_position: `2`",
+        "- content_authority: `application_generated`",
+        "",
         "## Template metadata",
         "",
         f"- filename: `{template.filename}`",
@@ -887,6 +905,13 @@ def build_field_fill_context_markdown(
         "[CASE6B_PHASE:FIELD_FILL]",
         "",
         "# Case 6B field-fill context",
+        "",
+        "## Document identity",
+        "",
+        "- logical_filename: `case6b_field_fill_context.md`",
+        "- document_role: `field_fill_context`",
+        "- attachment_position: `1`",
+        "- content_authority: `application_generated`",
         "",
         "## Field list",
         "",

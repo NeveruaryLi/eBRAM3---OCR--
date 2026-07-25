@@ -131,6 +131,10 @@ Agent L 在同一 conversation 内执行两轮：
 1. 文本说明 + 原始 DOCX + `case6b_template_context.md`，解析全部字段语义。
 2. 文本说明 + `case6b_field_fill_context.md`，根据字段清单、材料事实和冲突输出填充结果。
 
+GPTBots 会把通过 base64 发送的附件重命名为时间戳文件名，即使请求已按官方契约传入
+`name`。因此上述名称是逻辑名称：应用仍发送 `name`，同时在 Markdown 内写入
+`document_role`、阶段标记和附件位置；Agent L 按这些稳定标识识别文件，不依赖平台日志名称。
+
 关键数据全部放在 Markdown 附件中，不依赖短期记忆。Agent L 完成后，系统生成只用于浏览器展示的 Word 风格草案：固定法律条款只读，已识别空位在原位置可编辑，用户可切换原模板、查看差异、证据和冲突。编辑停止约 800 毫秒后自动保存；处理中可中断并保留浏览器已选择的文件，修改后从头重跑。未解决冲突阻止生成，普通待确认字段经风险确认后以黄色标记保留，签名和签署日期保持空白。最终文件始终从原始模板按稳定 locator 回填，分别生成 DOCX 和 PDF。
 
 详细限制和审阅契约见 [项目交接文档](docs/HANDOVER.md) 与 [Agent L overview](GPTbots_.bot/generated/case6b/overview.md)。

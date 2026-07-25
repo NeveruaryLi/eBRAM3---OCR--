@@ -421,6 +421,11 @@ FlowAgent 路由条件为 `sys_user_msg_count < 1`。GPTBots 在处理当前消�
 1. 一段短文本，说明附件包含第一轮字段清单与材料证据，并要求只返回填充 JSON。
 2. `case6b_field_fill_context.md`，包含阶段标记、完整 `field_list`、`full_summary`、冲突、原始值和规范化值。
 
+上述 Markdown 文件名是应用侧逻辑名称。GPTBots 当前会把 base64 附件在会话记录中重命名为
+时间戳名称，即使请求已传入官方 `name` 字段。运行契约因此同时使用附件顺序、文件格式、
+`CASE6B_PHASE`、`document_role` 和 Markdown 内部 Document identity 块，不以控制台显示名称
+作为路由或内容识别条件。
+
 关键数据完全包含在 Markdown 附件中。短期记忆只辅助上下文，不作为唯一状态来源。
 
 Agent L 必须：

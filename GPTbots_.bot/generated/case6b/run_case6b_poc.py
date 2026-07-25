@@ -468,6 +468,12 @@ def main() -> None:
             "",
             "# Case 6B template context",
             "",
+            "## Document identity",
+            "",
+            "- logical_filename: `case6b_template_context.md`",
+            "- document_role: `template_context`",
+            "- attachment_position: `2`",
+            "",
             "## Detected fields",
             "",
             "```json",
@@ -482,9 +488,13 @@ def main() -> None:
                 "type": "text",
                 "text": (
                     "[CASE6B_PHASE:TEMPLATE_PARSE]\n"
-                    f"Attachment 1, {args.template.name}, is the original DOCX agreement "
-                    "template. Attachment 2, case6b_template_context.md, contains the "
-                    "detected placeholders, stable field IDs, locators, and required "
+                    f"The first document attachment (DOCX; logical name "
+                    f"`{args.template.name}`) is the original agreement template. "
+                    "The second document attachment (Markdown; document role "
+                    "`template_context`) contains the detected placeholders, stable "
+                    "field IDs, locators, and required output schema. GPTBots may show "
+                    "generated attachment names; identify files by order, format, phase "
+                    "marker and the internal Document identity header. "
                     "output schema. Read both attachments together without adding, "
                     "removing, reordering, or filling fields. Return exactly one JSON "
                     "Object and no commentary or Markdown fences."
@@ -530,6 +540,12 @@ def main() -> None:
             "",
             "# Case 6B field-fill context",
             "",
+            "## Document identity",
+            "",
+            "- logical_filename: `case6b_field_fill_context.md`",
+            "- document_role: `field_fill_context`",
+            "- attachment_position: `1`",
+            "",
             "## Field list",
             "",
             "```json",
@@ -550,8 +566,11 @@ def main() -> None:
                 "type": "text",
                 "text": (
                     "[CASE6B_PHASE:FIELD_FILL]\n"
-                    "The attachment case6b_field_fill_context.md contains the detected "
-                    "field list and evidence summary from all source files. Treat it as "
+                    "The only document attachment (Markdown; document role "
+                    "`field_fill_context`) contains the detected field list and evidence "
+                    "summary from all source files. GPTBots may show a generated filename; "
+                    "identify it by the phase marker and internal Document identity header. "
+                    "Treat it as "
                     "the sole source of field IDs and facts, fill every listed field "
                     "once, and preserve evidence references. Return exactly one JSON "
                     "Object and no commentary or Markdown fences."

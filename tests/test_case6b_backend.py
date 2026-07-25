@@ -412,10 +412,15 @@ class Case6BCoreTests(unittest.TestCase):
         second_content = second["messages"][0]["content"]
         self.assertEqual(["text", "document"], [item["type"] for item in first_content])
         self.assertEqual(["text", "document"], [item["type"] for item in second_content])
-        self.assertIn("original DOCX agreement template", first_content[0]["text"])
+        self.assertIn("original agreement template", first_content[0]["text"])
         self.assertIn("case6b_template_context.md", first_content[0]["text"])
+        self.assertIn("first document attachment", first_content[0]["text"])
+        self.assertIn("second document attachment", first_content[0]["text"])
+        self.assertIn("Do not rely on the filenames shown", first_content[0]["text"])
         self.assertIn("return exactly one JSON Object", first_content[0]["text"])
         self.assertIn("case6b_field_fill_context.md", second_content[0]["text"])
+        self.assertIn("only document attachment", second_content[0]["text"])
+        self.assertIn("Do not rely on the filename shown", second_content[0]["text"])
         self.assertIn("complete field list", second_content[0]["text"])
         self.assertIn("return exactly one JSON Object", second_content[0]["text"])
         self.assertEqual(
@@ -434,6 +439,13 @@ class Case6BCoreTests(unittest.TestCase):
         ).decode("utf-8")
         self.assertIn("[CASE6B_PHASE:TEMPLATE_PARSE]", template_context)
         self.assertIn("[CASE6B_PHASE:FIELD_FILL]", fill_context)
+        self.assertIn("logical_filename: `case6b_template_context.md`", template_context)
+        self.assertIn("document_role: `template_context`", template_context)
+        self.assertIn(
+            "logical_filename: `case6b_field_fill_context.md`",
+            fill_context,
+        )
+        self.assertIn("document_role: `field_fill_context`", fill_context)
         self.assertIn("## Detected fields", template_context)
         self.assertIn("## Evidence summary", fill_context)
         self.assertTrue(first["conversation_config"]["short_term_memory"])

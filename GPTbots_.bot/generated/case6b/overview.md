@@ -16,12 +16,15 @@ flowchart LR
 
 ## Runtime contract
 
-- First message: a short text guide, the original DOCX, and `case6b_template_context.md`;
-  the Markdown contains `[CASE6B_PHASE:TEMPLATE_PARSE]`, every detected field and its
-  stable locator.
-- Second message in the same conversation: `case6b_field_fill_context.md`; the Markdown contains
-  `[CASE6B_PHASE:FIELD_FILL]`, the complete `field_list` and evidence `full_summary`. A short
-  text guide identifies the attachment and expected JSON-only response.
+- First message: a short text guide, the original DOCX as attachment 1, and the template-context
+  Markdown as attachment 2. The Markdown contains `[CASE6B_PHASE:TEMPLATE_PARSE]`, an internal
+  `document_role=template_context`, every detected field and its stable locator.
+- Second message in the same conversation: one field-fill Markdown attachment containing
+  `[CASE6B_PHASE:FIELD_FILL]`, `document_role=field_fill_context`, the complete `field_list`
+  and evidence `full_summary`.
+- GPTBots currently rewrites base64 attachment filenames to generated timestamp names even when
+  the documented `name` field is supplied. Agent L therefore identifies attachments by order,
+  format, phase marker and their internal Document identity block rather than the console name.
 - Both LLM components return one JSON object.
 - Long-term memory, user properties, tools, workflows and databases are disabled.
 - Short-term memory is auxiliary only; critical state is always supplied explicitly.
