@@ -1076,9 +1076,25 @@ async def session_analyze(session_id: str = Form(...)):
       {"type": "fatal_error",      "message": "..."}                        # 致命异常，流结束
     """
     handler = _get_handler(session_id)
+    run_id = None
+    if session_metadata.get(session_id, {}).get("case_type") == "case6b":
+        from cases.case6b_service_agreement import (
+            Case6BSession,
+            begin_analysis_run,
+        )
+
+        values = session_store.get(session_id)
+        if values and isinstance(values[0], Case6BSession):
+            try:
+                run_id = begin_analysis_run(values[0])
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     async def stream() -> AsyncIterator[str]:
-        yield _sse({"type": "analyze_start", "session_id": session_id})
+        start_event = {"type": "analyze_start", "session_id": session_id}
+        if run_id:
+            start_event["run_id"] = run_id
+        yield _sse(start_event)
         try:
             async for event in handler.analyze(
                 session_id=session_id,
@@ -1086,6 +1102,8 @@ async def session_analyze(session_id: str = Form(...)):
                 session_results_store=session_results_store,
             ):
                 yield _sse({"type": event.type, **event.data})
+        except asyncio.CancelledError:
+            return
         except Exception as exc:
             logger.exception("Session %s：handler.analyze() 致命错误", session_id)
             yield _sse({"type": "fatal_error", "message": str(exc)})

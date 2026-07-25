@@ -85,7 +85,7 @@ api/
   case4_routes.py         Case 4 单 PDF 上传
   case5_routes.py         Case 5 HKLII 搜索与抓取 SSE
   case6a_routes.py        Case 6A 私有会话映射和文本问答
-  case6b_routes.py        Case 6B 上传、重试、审阅、预览和 finalize
+  case6b_routes.py        Case 6B 上传、重试、中断、Word 文档视图、审阅和 finalize
 cases/
   base.py                 CaseHandler + SseEvent 契约
   __init__.py             Registry / Factory
@@ -445,11 +445,13 @@ Agent L 必须：
 - 未解决事实冲突阻止 finalize。
 - 普通 `NEEDS_CONFIRMATION` 字段允许在二次确认风险后生成，并用黄色 `[TO BE CONFIRMED]` 或 `[待確認]` 标记。
 - 服务名称与价格必须成对保留、留空或删除。
-- 修改 Review 后旧预览和旧生成文件失效。
-- POST preview 按 review version 生成并缓存预填 DOCX/PDF；GET preview 仅以内嵌方式返回完全匹配的当前版本。
-- 桌面端左侧显示原模板 PDF 预览、右侧显示字段编辑器；移动端使用“文档预览 / 待补字段”切换。
+- 修改 Review 后旧生成文件立即失效。
+- 后端生成带唯一字段标记的只读 DOCX shell；浏览器通过本地固定版本 `docx-preview` 与 JSZip 渲染近似 Word 页面，并只把识别出的标记替换为输入控件。
+- “预填草案 / 查看原模板”在同一文档位置切换；差异高亮、待补导航和证据抽屉不改变最终 DOCX。
+- 字段停止输入约 800 毫秒或失焦后自动串行 PATCH；保存失败保留浏览器值，版本冲突暂停自动保存。
+- 处理中可按 `analysis_run_id` 幂等取消；取消后迟到的 OCR/Agent 结果不得写回，浏览器保留已选择文件供删除、更换并完整重跑。
 
-文档生成在原模板内存副本上按 locator 替换，不重建整个模板。finalize 会复用版本一致的预览产物，避免重复转换。未使用服务行从 OOXML 完整删除；固定条款、字体、表格、页边距、页眉页脚和签署区尽量保留。
+文档生成在原模板内存副本上按 locator 替换，不重建整个模板。浏览器里的 HTML/输入控件不参与 DOCX 反向生成。未使用服务行从 OOXML 完整删除；固定条款、字体、表格、页边距、页眉页脚和签署区尽量保留。
 
 输出：
 
@@ -508,8 +510,9 @@ Case 6B 不支持结果追问。
 | POST | `/case6b/session/{session_id}/retry` |
 | GET | `/case6b/session/{session_id}/review` |
 | PATCH | `/case6b/session/{session_id}/review` |
-| POST | `/case6b/session/{session_id}/preview` |
-| GET | `/case6b/session/{session_id}/preview?version={review_version}` |
+| POST | `/case6b/session/{session_id}/cancel` |
+| GET | `/case6b/session/{session_id}/document-view` |
+| GET | `/case6b/session/{session_id}/document-shell?manifest_hash={hash}` |
 | POST | `/case6b/session/{session_id}/finalize` |
 | DELETE | `/case6b/session/{session_id}` |
 

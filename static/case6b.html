@@ -114,7 +114,10 @@
           <div class="c6b-progress-line"><span id="progressFill"></span></div>
           <p id="progressMessage">正在准备...</p>
           <div class="c6b-material-status" id="materialStatus"></div>
-          <button class="c6b-secondary-btn" id="retryBtn" type="button" hidden>仅重试失败材料</button>
+          <div class="c6b-progress-actions">
+            <button class="c6b-secondary-btn" id="retryBtn" type="button" hidden>仅重试失败材料</button>
+            <button class="c6b-cancel-btn" id="cancelAnalysisBtn" type="button" hidden disabled>中断并修改文件</button>
+          </div>
         </div>
         <div class="c6b-error" id="errorState" hidden>
           <strong>任务未完成</strong><p id="errorMessage"></p>
@@ -132,67 +135,70 @@
     </section>
 
     <section class="c6b-review" id="reviewPanel" hidden aria-labelledby="reviewTitle">
-      <div class="c6b-review-tabs" id="reviewTabs" role="tablist" aria-label="草案审阅视图">
-        <button type="button" role="tab" data-review-view="preview" aria-selected="true">文档预览</button>
-        <button type="button" role="tab" data-review-view="fields" aria-selected="false">待补字段</button>
+      <header class="c6b-document-head">
+        <div>
+          <span>DOCUMENT REVIEW / 04</span>
+          <h2 id="reviewTitle">在草案原位置核对并补充空位</h2>
+          <p>材料答案已预填；固定条款保持只读，所有修改将自动保存。</p>
+        </div>
+        <div class="c6b-review-meta">
+          <span id="fieldCount">0 个字段</span>
+          <span class="warning" id="unresolvedCount">0 个待补充</span>
+          <span class="c6b-save-state" id="dirtyBadge">自动保存 · 已保存</span>
+          <button class="c6b-retry-save" id="retrySaveBtn" type="button" hidden>重试保存</button>
+        </div>
+      </header>
+
+      <div class="c6b-document-toolbar">
+        <div class="c6b-mode-switch" id="documentMode" role="tablist" aria-label="文档显示模式">
+          <button type="button" role="tab" data-document-mode="draft" aria-selected="true">预填草案</button>
+          <button type="button" role="tab" data-document-mode="original" aria-selected="false">查看原模板</button>
+        </div>
+        <label class="c6b-difference-toggle" for="differenceToggle">
+          <input id="differenceToggle" type="checkbox" checked />
+          <span>差异高亮</span>
+        </label>
+        <div class="c6b-pending-nav">
+          <button type="button" id="previousPendingBtn" aria-label="上一个待补字段">←</button>
+          <span id="pendingPosition">0 / 0 待补</span>
+          <button type="button" id="nextPendingBtn" aria-label="下一个待补字段">→</button>
+        </div>
       </div>
-      <div class="c6b-review-workbench" id="reviewWorkbench" data-mobile-view="preview">
-        <article class="c6b-preview-pane" id="previewPane" aria-labelledby="previewTitle">
-          <div class="c6b-preview-toolbar">
-            <div>
-              <span>DOCUMENT PREVIEW</span>
-              <h2 id="previewTitle">原模板预填草案</h2>
-            </div>
-            <span class="c6b-preview-state" id="previewStatus">等待生成</span>
+
+      <div class="c6b-conflicts" id="conflictPanel" hidden>
+        <h3>材料冲突</h3>
+        <p>请选择经核对后的值；未解决冲突将阻止生成正式文档。</p>
+        <div id="conflictList"></div>
+      </div>
+
+      <div class="c6b-document-workspace">
+        <article class="c6b-document-stage" aria-label="Word 风格草案编辑区">
+          <div class="c6b-document-loading" id="documentLoading" role="status">
+            <div class="c6b-preview-sheet" aria-hidden="true"><i></i><i></i><i></i></div>
+            <strong>正在打开 Word 风格草案</strong>
+            <p>系统会把已识别空位映射为可填写字段，固定条款不会被修改。</p>
           </div>
-          <div class="c6b-paper-stage">
-            <iframe id="previewFrame" title="服务协议草案 PDF 预览" hidden></iframe>
-            <div class="c6b-preview-fallback" id="previewFallback" role="status">
-              <div class="c6b-preview-sheet" aria-hidden="true"><i></i><i></i><i></i></div>
-              <strong>正在准备文档预览</strong>
-              <p>系统会把 Agent L 的建议写回原模板；缺失内容以黄色待确认标记显示。</p>
-            </div>
+          <div class="c6b-document-canvas show-differences" id="documentCanvas" aria-live="polite"></div>
+          <div class="c6b-editor-fallback" id="editorFallback" hidden>
+            <strong>该模板暂时无法在文档原位编辑</strong>
+            <p id="fallbackReason">请使用下方字段表单继续核对，最终 DOCX 仍会保留原模板。</p>
+            <div class="c6b-review-groups" id="reviewGroups"></div>
           </div>
-          <p class="c6b-preview-note">预览保持原 Word 版式。黄色标记代表材料不足，签署区将在正式文件中继续留空。</p>
         </article>
 
-        <aside class="c6b-editor-pane" id="editorPane" aria-labelledby="reviewTitle">
-          <div class="c6b-review-head">
-            <div>
-              <span>REVIEW / 04</span>
-              <h2 id="reviewTitle">核对并补充字段</h2>
-              <p>材料答案已预填；可修改、接受建议或处理冲突。</p>
-            </div>
-            <div class="c6b-review-meta">
-              <span id="fieldCount">0 个字段</span>
-              <span class="warning" id="unresolvedCount">0 个待确认</span>
-              <span class="c6b-save-state" id="dirtyBadge">已保存</span>
-            </div>
-          </div>
-          <div class="c6b-review-filters" id="reviewFilters" aria-label="筛选审阅字段">
-            <button type="button" data-filter="pending" aria-pressed="true">待补充</button>
-            <button type="button" data-filter="filled" aria-pressed="false">材料已填</button>
-            <button type="button" data-filter="conflicts" aria-pressed="false">冲突</button>
-            <button type="button" data-filter="signature" aria-pressed="false">签署时填写</button>
-            <button type="button" data-filter="all" aria-pressed="false">全部</button>
-          </div>
-          <div class="c6b-editor-scroll">
-            <div class="c6b-conflicts" id="conflictPanel" hidden>
-              <h3>材料冲突</h3>
-              <p>请选择经核对后的值；未解决冲突将阻止生成正式文档。</p>
-              <div id="conflictList"></div>
-            </div>
-            <div class="c6b-review-groups" id="reviewGroups"></div>
-            <div class="c6b-filter-empty" id="filterEmpty" hidden>当前分类没有需要处理的字段。</div>
-          </div>
-          <div class="c6b-review-actions">
-            <button class="c6b-secondary-btn" id="saveReviewBtn" type="button" disabled>保存并刷新预览</button>
-            <button class="c6b-primary-btn" id="finalizeBtn" type="button">生成正式文档</button>
-          </div>
+        <aside class="c6b-evidence-drawer" id="evidenceDrawer" hidden aria-labelledby="evidenceTitle">
+          <button class="c6b-drawer-close" id="evidenceCloseBtn" type="button" aria-label="关闭字段详情">×</button>
+          <span>FIELD DETAIL</span>
+          <h3 id="evidenceTitle">字段详情</h3>
+          <div id="evidenceBody"></div>
         </aside>
       </div>
-    </section>
 
+      <div class="c6b-review-actions">
+        <p>黄色空位需要补充；灰色签署字段将在正式文档中保持空白。</p>
+        <button class="c6b-primary-btn" id="finalizeBtn" type="button">生成正式文档</button>
+      </div>
+    </section>
     <section class="c6b-downloads" id="downloadPanel" hidden aria-live="polite">
       <div class="c6b-complete-mark">✓</div>
       <div><span>DRAFT READY</span><h2>协议草案已生成</h2><p id="downloadMessage">请在正式使用前完成法律审阅。</p></div>
@@ -206,6 +212,8 @@
 </div>
 
 <script src="/static/common.js"></script>
+<script src="/static/vendor/jszip.min.js"></script>
+<script src="/static/vendor/docx-preview.min.js"></script>
 <script src="/static/case6b.js"></script>
 </body>
 </html>

@@ -11,7 +11,7 @@ from typing import Any, AsyncIterator
 from uuid import uuid4
 
 from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from api.pdf_chat import (
@@ -28,10 +28,13 @@ from cases.case6b_service_agreement import (
     Case6BDraftingHandler,
     Case6BSession,
     apply_review_changes,
+    begin_analysis_run,
     build_template_preflight,
     convert_docx_to_pdf,
+    document_view_payload,
     extract_template_manifest,
     render_draft_docx,
+    request_analysis_cancel,
     review_payload,
     validate_material,
     validate_template,
@@ -72,8 +75,8 @@ class FinalizeRequest(BaseModel):
     allow_unresolved: bool = False
 
 
-class PreviewRequest(BaseModel):
-    version: int = Field(ge=1)
+class CancelRequest(BaseModel):
+    run_id: str = Field(min_length=8, max_length=64)
 
 
 def _error(status: int, code: str, message: str) -> HTTPException:
@@ -206,14 +209,20 @@ async def retry_case6b(
     ):
         raise _error(400, "NO_FAILED_MATERIAL", "当前没有需要重试的失败材料")
     handler = Case6BDraftingHandler(retry_material_ids=retry_ids)
+    try:
+        run_id = begin_analysis_run(session)
+    except ValueError as exc:
+        raise _error(409, "SESSION_BUSY", str(exc)) from exc
 
     async def stream() -> AsyncIterator[str]:
-        yield _sse({"type": "analysis_start", "session_id": session_id})
+        yield _sse({"type": "analysis_start", "session_id": session_id, "run_id": run_id})
         try:
             async for event in handler.analyze(
                 session_id, session_store, session_results_store
             ):
                 yield _sse({"type": event.type, **event.data})
+        except asyncio.CancelledError:
+            return
         except Exception as exc:
             yield _sse({"type": "fatal_error", "message": str(exc)})
             return
@@ -235,6 +244,28 @@ async def delete_case6b_session(session_id: str) -> Response:
     session_results_store.pop(session_id, None)
     session_metadata.pop(session_id, None)
     return Response(status_code=204)
+
+
+@router.post("/session/{session_id}/cancel")
+async def cancel_case6b_analysis(session_id: str, body: CancelRequest):
+    values = session_store.get(session_id)
+    if not values or not isinstance(values[0], Case6BSession):
+        return {"status": "cancelled", "run_id": body.run_id}
+    session = values[0]
+    was_running = session.analysis_state in {"running", "cancelling"}
+    try:
+        request_analysis_cancel(session, body.run_id)
+    except ValueError as exc:
+        raise _error(409, "STALE_ANALYSIS_RUN", str(exc)) from exc
+    session_results_store.pop(session_id, None)
+    if was_running:
+        return JSONResponse(
+            status_code=202,
+            content={"status": "cancelling", "run_id": body.run_id},
+        )
+    session_store.pop(session_id, None)
+    session_metadata.pop(session_id, None)
+    return {"status": "cancelled", "run_id": body.run_id}
 
 
 @router.get("/session/{session_id}/review")
@@ -271,75 +302,40 @@ async def update_case6b_review(session_id: str, body: ReviewUpdate):
     return review_payload(session)
 
 
-@router.post("/session/{session_id}/preview")
-async def create_case6b_preview(session_id: str, body: PreviewRequest):
+@router.get("/session/{session_id}/document-view")
+async def get_case6b_document_view(session_id: str):
     session = _session(session_id)
     if session.lock.locked():
         raise _error(409, "SESSION_BUSY", "当前草案正在处理中，请稍候")
-    if not session.fields:
-        raise _error(409, "REVIEW_NOT_READY", "字段分析尚未完成")
-    if body.version != session.review_version:
-        raise _error(409, "STALE_REVIEW", "审阅内容已更新，请刷新后再预览")
-    async with session.lock:
-        if (
-            session.preview_version != session.review_version
-            or session.preview_docx is None
-        ):
-            try:
-                session.preview_docx = await asyncio.to_thread(
-                    render_draft_docx,
-                    session.template.content,
-                    session.field_manifest,
-                    session.fields,
-                    session.template.language,
-                )
-            except ValueError as exc:
-                raise _error(
-                    400, "PREVIEW_GENERATION_FAILED", str(exc)
-                ) from exc
-            session.preview_pdf = None
-            session.preview_error = None
-            try:
-                session.preview_pdf = await asyncio.to_thread(
-                    convert_docx_to_pdf,
-                    session.preview_docx,
-                    session.template.filename,
-                )
-            except Exception as exc:
-                session.preview_error = str(exc)
-            session.preview_version = session.review_version
-            session.updated_at = datetime.utcnow()
-    preview_url = (
-        f"/case6b/session/{session_id}/preview"
-        f"?version={session.review_version}"
-    )
-    return {
-        "version": session.review_version,
-        "pdf_ready": session.preview_pdf is not None,
-        "pdf_error": session.preview_error,
-        "preview_url": preview_url,
-    }
+    try:
+        return await asyncio.to_thread(document_view_payload, session, session_id)
+    except ValueError as exc:
+        raise _error(409, "DOCUMENT_VIEW_NOT_READY", str(exc)) from exc
 
 
-@router.get("/session/{session_id}/preview")
-async def get_case6b_preview(
+@router.get("/session/{session_id}/document-shell")
+async def get_case6b_document_shell(
     session_id: str,
-    version: int = Query(ge=1),
+    manifest_hash: str = Query(min_length=64, max_length=64),
 ):
     session = _session(session_id)
-    if version != session.review_version:
-        raise _error(409, "STALE_REVIEW", "审阅内容已更新，请刷新后再预览")
-    if session.preview_version != version or session.preview_pdf is None:
-        raise _error(404, "PREVIEW_UNAVAILABLE", "当前版本的 PDF 预览尚未生成")
+    if not session.fields:
+        raise _error(409, "REVIEW_NOT_READY", "字段分析尚未完成")
+    if session.document_shell is None or session.document_shell_hash is None:
+        await asyncio.to_thread(document_view_payload, session, session_id)
+    if manifest_hash != session.document_shell_hash:
+        raise _error(409, "STALE_DOCUMENT_VIEW", "文档结构已更新，请重新加载")
     return Response(
-        content=session.preview_pdf,
-        media_type="application/pdf",
+        content=session.document_shell,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "wordprocessingml.document"
+        ),
         headers={
-            "Content-Disposition": "inline",
+            "Content-Disposition": 'inline; filename="case6b-editable-shell.docx"',
             "Cache-Control": "no-store",
         },
     )
-
 
 @router.post("/session/{session_id}/finalize")
 async def finalize_case6b(session_id: str, body: FinalizeRequest):
@@ -362,34 +358,26 @@ async def finalize_case6b(session_id: str, body: FinalizeRequest):
             f"仍有 {review['unresolved_count']} 个必填字段待确认",
         )
     async with session.lock:
-        if (
-            session.preview_version == session.review_version
-            and session.preview_docx is not None
-        ):
-            session.generated_docx = session.preview_docx
-            session.generated_pdf = session.preview_pdf
-            session.pdf_error = session.preview_error
-        else:
-            try:
-                session.generated_docx = await asyncio.to_thread(
-                    render_draft_docx,
-                    session.template.content,
-                    session.field_manifest,
-                    session.fields,
-                    session.template.language,
-                )
-            except ValueError as exc:
-                raise _error(400, "DRAFT_GENERATION_FAILED", str(exc)) from exc
-            session.generated_pdf = None
-            session.pdf_error = None
-            try:
-                session.generated_pdf = await asyncio.to_thread(
-                    convert_docx_to_pdf,
-                    session.generated_docx,
-                    session.template.filename,
-                )
-            except Exception as exc:
-                session.pdf_error = str(exc)
+        try:
+            session.generated_docx = await asyncio.to_thread(
+                render_draft_docx,
+                session.template.content,
+                session.field_manifest,
+                session.fields,
+                session.template.language,
+            )
+        except ValueError as exc:
+            raise _error(400, "DRAFT_GENERATION_FAILED", str(exc)) from exc
+        session.generated_pdf = None
+        session.pdf_error = None
+        try:
+            session.generated_pdf = await asyncio.to_thread(
+                convert_docx_to_pdf,
+                session.generated_docx,
+                session.template.filename,
+            )
+        except Exception as exc:
+            session.pdf_error = str(exc)
         session.updated_at = datetime.utcnow()
         result = session_results_store.setdefault(
             session_id,

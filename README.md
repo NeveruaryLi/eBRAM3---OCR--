@@ -131,7 +131,7 @@ Agent L 在同一 conversation 内执行两轮：
 1. 文本说明 + 原始 DOCX + `case6b_template_context.md`，解析全部字段语义。
 2. 文本说明 + `case6b_field_fill_context.md`，根据字段清单、材料事实和冲突输出填充结果。
 
-关键数据全部放在 Markdown 附件中，不依赖短期记忆。Agent L 完成后，系统将答案回填原模板并生成 PDF 预览；桌面端采用“文档预览 + 字段编辑”双栏，移动端在两种视图间切换。用户可审阅证据、接受建议、补充缺失字段、处理冲突和重复服务行。未解决冲突阻止生成，普通待确认字段经风险确认后以黄色标记保留，签名和签署日期保持空白。最终在原模板副本中精准替换占位符，分别生成 DOCX 和 PDF。
+关键数据全部放在 Markdown 附件中，不依赖短期记忆。Agent L 完成后，系统生成只用于浏览器展示的 Word 风格草案：固定法律条款只读，已识别空位在原位置可编辑，用户可切换原模板、查看差异、证据和冲突。编辑停止约 800 毫秒后自动保存；处理中可中断并保留浏览器已选择的文件，修改后从头重跑。未解决冲突阻止生成，普通待确认字段经风险确认后以黄色标记保留，签名和签署日期保持空白。最终文件始终从原始模板按稳定 locator 回填，分别生成 DOCX 和 PDF。
 
 详细限制和审阅契约见 [项目交接文档](docs/HANDOVER.md) 与 [Agent L overview](GPTbots_.bot/generated/case6b/overview.md)。
 
@@ -153,7 +153,9 @@ Agent L 在同一 conversation 内执行两轮：
 | GET | `/case6b/session/{id}/template` | 模板自动预检结果 |
 | POST | `/case6b/session/{id}/retry` | 仅重试失败材料 |
 | GET/PATCH | `/case6b/session/{id}/review` | 读取或更新字段审阅 |
-| POST/GET | `/case6b/session/{id}/preview` | 生成或内嵌读取当前审阅版本的 PDF 预览 |
+| POST | `/case6b/session/{id}/cancel` | 幂等中断当前分析 run |
+| GET | `/case6b/session/{id}/document-view` | 获取 Word 风格编辑器字段清单与 shell 地址 |
+| GET | `/case6b/session/{id}/document-shell` | 下载带稳定字段标记的只读 DOCX shell |
 | POST | `/case6b/session/{id}/finalize` | 确认风险并生成正式文档 |
 
 ## 项目结构

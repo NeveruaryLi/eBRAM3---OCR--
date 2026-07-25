@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from api.pdf_chat import session_metadata, session_results_store, session_store
 from app import app
 from cases.case6b_service_agreement import (
+    Case6BDraftingHandler,
     Case6BSession,
     MaterialRecord,
     _merge_manifest,
@@ -21,6 +22,7 @@ from cases.case6b_service_agreement import (
     _validate_agent_fields,
     _apply_profile_evidence_enrichment,
     apply_review_changes,
+    begin_analysis_run,
     build_template_preflight,
     build_agent_l_fill_payload,
     build_agent_l_template_payload,
@@ -34,6 +36,7 @@ from cases.case6b_service_agreement import (
     ocr_submission_filename,
     parse_agent_json,
     render_draft_docx,
+    request_analysis_cancel,
     validate_material,
     validate_template,
 )
@@ -436,6 +439,63 @@ class Case6BCoreTests(unittest.TestCase):
         self.assertTrue(first["conversation_config"]["short_term_memory"])
         self.assertTrue(second["conversation_config"]["short_term_memory"])
 
+    def test_needs_confirmation_preserves_suggestion_separately(self):
+        manifest = {"fields": [{"field_id": "p001_f01", "field_kind": "scalar"}]}
+        values = _validate_agent_fields(
+            manifest,
+            {
+                "fields": [
+                    {
+                        "field_id": "p001_f01",
+                        "status": "NEEDS_CONFIRMATION",
+                        "value": "1 August 2026",
+                        "evidence": [{"source": "email.pdf", "fact": "Proposed date"}],
+                    }
+                ]
+            },
+            filled=True,
+        )
+        self.assertEqual("", values[0]["value"])
+        self.assertEqual("1 August 2026", values[0]["suggested_value"])
+
+    def test_cancelled_analysis_discards_partial_results_and_stores(self):
+        session = Case6BSession(
+            template=validate_template(TEMPLATE.read_bytes(), TEMPLATE.name),
+            materials=[MaterialRecord("m1", "facts.pdf", "pdf", b"%PDF", 1)],
+            field_manifest=extract_template_manifest(TEMPLATE.read_bytes()),
+        )
+        local_store = {"session": [session]}
+        local_results = {}
+        run_id = begin_analysis_run(session)
+
+        async def slow_summary(_material):
+            await asyncio.sleep(60)
+            return []
+
+        async def scenario():
+            handler = Case6BDraftingHandler()
+
+            async def consume():
+                async for _ in handler.analyze("session", local_store, local_results):
+                    pass
+
+            task = asyncio.create_task(consume())
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            request_analysis_cancel(session, run_id)
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+        with patch(
+            "cases.case6b_service_agreement._summarize_material",
+            new=slow_summary,
+        ):
+            asyncio.run(scenario())
+        self.assertEqual("cancelled", session.analysis_state)
+        self.assertEqual({}, local_store)
+        self.assertEqual({}, local_results)
+        self.assertEqual([], session.fields)
+        self.assertEqual("pending", session.materials[0].status)
     def test_agent_json_parser_accepts_fenced_object(self):
         parsed = parse_agent_json('```json\n{"fields": [], "conflicts": []}\n```')
         self.assertEqual([], parsed["fields"])
@@ -590,7 +650,7 @@ class Case6BCoreTests(unittest.TestCase):
         self.assertEqual("USER_CONFIRMED", target["status"])
         self.assertEqual("user_confirmed", target["source_type"])
 
-    def test_review_change_invalidates_preview_artifacts(self):
+    def test_review_change_invalidates_generated_files_but_keeps_document_shell(self):
         fields = json.loads((FIXTURES / "expected_fill.json").read_text("utf-8"))[
             "fields"
         ]
@@ -602,10 +662,10 @@ class Case6BCoreTests(unittest.TestCase):
             ),
             fields=fields,
             review_version=1,
-            preview_docx=b"preview-docx",
-            preview_pdf=b"%PDF-preview",
-            preview_version=1,
-            preview_error="old",
+            document_shell=b"shell-docx",
+            document_shell_hash="a" * 64,
+            generated_docx=b"draft-docx",
+            generated_pdf=b"%PDF-draft",
         )
         apply_review_changes(
             session,
@@ -613,11 +673,10 @@ class Case6BCoreTests(unittest.TestCase):
             field_updates=[{"field_id": "p002_f01", "value": "1 August 2026"}],
             service_rows=[],
         )
-        self.assertIsNone(session.preview_docx)
-        self.assertIsNone(session.preview_pdf)
-        self.assertIsNone(session.preview_version)
-        self.assertIsNone(session.preview_error)
-
+        self.assertEqual(b"shell-docx", session.document_shell)
+        self.assertEqual("a" * 64, session.document_shell_hash)
+        self.assertIsNone(session.generated_docx)
+        self.assertIsNone(session.generated_pdf)
     def test_docx_fill_preserves_signature_blanks_and_removes_unused_service_rows(self):
         fields = json.loads((FIXTURES / "expected_fill.json").read_text("utf-8"))[
             "fields"
@@ -1253,71 +1312,80 @@ class Case6BRouteTests(unittest.TestCase):
         self.assertEqual(200, report.status_code)
         self.assertTrue(report.content.startswith(b"PK"))
 
-    def test_preview_generates_inline_pdf_for_exact_review_version(self):
+    def test_document_view_returns_word_shell_with_unique_field_markers(self):
         session_id = self._ready_session()
-        with (
-            patch("api.case6b_routes.render_draft_docx", return_value=b"preview-docx"),
-            patch("api.case6b_routes.convert_docx_to_pdf", return_value=b"%PDF-preview"),
-        ):
-            created = self.client.post(
-                f"/case6b/session/{session_id}/preview",
-                json={"version": 1},
-            )
-            preview = self.client.get(
-                f"/case6b/session/{session_id}/preview?version=1"
-            )
-        self.assertEqual(200, created.status_code, created.text)
-        self.assertTrue(created.json()["pdf_ready"])
-        self.assertEqual(200, preview.status_code)
-        self.assertEqual("application/pdf", preview.headers["content-type"])
-        self.assertEqual("inline", preview.headers["content-disposition"])
-        self.assertEqual(b"%PDF-preview", preview.content)
+        view = self.client.get(f"/case6b/session/{session_id}/document-view")
+        self.assertEqual(200, view.status_code, view.text)
+        payload = view.json()
+        self.assertEqual(37, len(payload["fields"]))
+        shell = self.client.get(payload["shell_url"])
+        self.assertEqual(200, shell.status_code, shell.text)
+        self.assertIn(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            shell.headers["content-type"],
+        )
+        document = Document(io.BytesIO(shell.content))
+        text = "\n".join(
+            [paragraph.text for paragraph in document.paragraphs]
+            + [
+                paragraph.text
+                for table in document.tables
+                for row in table.rows
+                for cell in row.cells
+                for paragraph in cell.paragraphs
+            ]
+        )
+        for field in payload["fields"]:
+            self.assertEqual(1, text.count(field["marker"]), field["field_id"])
 
-    def test_preview_rejects_stale_version_and_reports_pdf_failure(self):
+    def test_document_shell_rejects_stale_manifest_hash(self):
         session_id = self._ready_session()
-        stale = self.client.post(
-            f"/case6b/session/{session_id}/preview",
-            json={"version": 9},
+        response = self.client.get(
+            f"/case6b/session/{session_id}/document-shell"
+            f"?manifest_hash={'0' * 64}"
         )
-        self.assertEqual(409, stale.status_code)
-        self.assertEqual("STALE_REVIEW", stale.json()["detail"]["code"])
-        with (
-            patch("api.case6b_routes.render_draft_docx", return_value=b"preview-docx"),
-            patch(
-                "api.case6b_routes.convert_docx_to_pdf",
-                side_effect=RuntimeError("PDF unavailable"),
-            ),
-        ):
-            failed = self.client.post(
-                f"/case6b/session/{session_id}/preview",
-                json={"version": 1},
-            )
-        self.assertFalse(failed.json()["pdf_ready"])
-        unavailable = self.client.get(
-            f"/case6b/session/{session_id}/preview?version=1"
-        )
-        self.assertEqual(404, unavailable.status_code)
+        self.assertEqual(409, response.status_code)
+        self.assertEqual("STALE_DOCUMENT_VIEW", response.json()["detail"]["code"])
 
-    def test_finalize_reuses_matching_preview_artifacts(self):
+    def test_cancel_is_idempotent_and_rejects_stale_run(self):
         session_id = self._ready_session()
         session = session_store[session_id][0]
-        session.preview_docx = b"preview-docx"
-        session.preview_pdf = b"%PDF-preview"
-        session.preview_version = 1
+        session.analysis_run_id = "run-current-1234"
+        session.analysis_state = "running"
+        stale = self.client.post(
+            f"/case6b/session/{session_id}/cancel",
+            json={"run_id": "run-stale-12345"},
+        )
+        self.assertEqual(409, stale.status_code)
+        cancelled = self.client.post(
+            f"/case6b/session/{session_id}/cancel",
+            json={"run_id": "run-current-1234"},
+        )
+        repeated = self.client.post(
+            f"/case6b/session/{session_id}/cancel",
+            json={"run_id": "run-current-1234"},
+        )
+        self.assertEqual(202, cancelled.status_code)
+        self.assertEqual(202, repeated.status_code)
+        self.assertTrue(session.cancel_event.is_set())
+        self.assertEqual("cancelling", session.analysis_state)
+
+    def test_finalize_renders_current_review_without_pdf_preview_cache(self):
+        session_id = self._ready_session()
+        session = session_store[session_id][0]
         with (
-            patch("api.case6b_routes.render_draft_docx") as render,
-            patch("api.case6b_routes.convert_docx_to_pdf") as convert,
+            patch("api.case6b_routes.render_draft_docx", return_value=b"draft-docx") as render,
+            patch("api.case6b_routes.convert_docx_to_pdf", return_value=b"%PDF-draft") as convert,
         ):
             finalized = self.client.post(
                 f"/case6b/session/{session_id}/finalize",
                 json={"version": 1, "allow_unresolved": True},
             )
         self.assertEqual(200, finalized.status_code, finalized.text)
-        self.assertEqual(b"preview-docx", session.generated_docx)
-        self.assertEqual(b"%PDF-preview", session.generated_pdf)
-        render.assert_not_called()
-        convert.assert_not_called()
-
+        self.assertEqual(b"draft-docx", session.generated_docx)
+        self.assertEqual(b"%PDF-draft", session.generated_pdf)
+        render.assert_called_once()
+        convert.assert_called_once()
     def test_finalize_is_blocked_by_unresolved_conflicts(self):
         session_id = self._ready_session()
         session_store[session_id][0].conflicts = [
