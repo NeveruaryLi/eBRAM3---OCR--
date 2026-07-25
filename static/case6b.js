@@ -6,6 +6,7 @@ const state = {
   template: null,
   materials: [],
   sessionId: null,
+  reviewContextToken: 0,
   templatePreflight: null,
   review: null,
   busy: false,
@@ -23,8 +24,11 @@ const state = {
   savePaused: false,
   analysisRunId: null,
   analysisController: null,
+  analysisRunToken: null,
+  analysisCompletion: null,
   processing: false,
   cancelRequested: false,
+  cancelRunToken: null,
   documentView: null,
   documentMode: 'draft',
   activeFieldId: null,
@@ -106,6 +110,15 @@ function syncUploadControls() {
   });
 }
 function updateStartButton() { els.start.disabled = state.busy || !state.template || state.materials.length < 1; }
+function captureReviewContext() {
+  return { sessionId: state.sessionId, token: state.reviewContextToken };
+}
+function isCurrentReviewContext(context) {
+  return Boolean(context.sessionId)
+    && state.sessionId === context.sessionId
+    && state.reviewContextToken === context.token;
+}
+function invalidateReviewContext() { state.reviewContextToken += 1; }
 
 function loadHistory() {
   try { state.history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { state.history = []; }
@@ -136,7 +149,7 @@ function renderHistory() {
     title.addEventListener('click', () => switchHistory(item));
     const menu = createHistoryMenu({
       label: title.textContent,
-      isDisabled: () => state.busy,
+      isDisabled: () => state.busy || state.saveInFlight,
       onDelete: () => deleteHistory(item.id),
     });
     node.append(title, menu);
@@ -145,7 +158,7 @@ function renderHistory() {
 }
 async function deleteHistory(id) {
   const item = state.history.find(entry => entry.id === id);
-  if (!item || state.busy) return;
+  if (!item || state.busy || state.saveInFlight) return;
   state.history = state.history.filter(entry => entry.id !== id);
   const wasCurrent = state.currentLocalId === id;
   if (wasCurrent) {
@@ -168,15 +181,35 @@ async function deleteHistory(id) {
     }
   }
 }
+async function saveBeforeNavigation() {
+  if (!state.review || (!state.dirty && !state.saveInFlight)) return true;
+  if (state.saveInFlight) {
+    toast('草案正在自动保存，请稍候再切换。');
+    return false;
+  }
+  const saved = await flushAutoSave();
+  if (!saved || state.dirty) {
+    toast('当前草案仍有未保存内容，请重试保存后再切换。');
+    return false;
+  }
+  return true;
+}
 async function switchHistory(item) {
   if (state.busy) return;
+  if (!(await saveBeforeNavigation())) return;
   clearView(false); state.currentLocalId = item.id; state.sessionId = item.sessionId || null; renderHistory();
   syncUploadControls();
   if (state.sessionId) {
+    const reviewContext = captureReviewContext();
     try {
-      state.review = await requestJson(`/case6b/session/${encodeURIComponent(state.sessionId)}/review`);
-      await renderReview();
-    } catch (error) { item.expired = true; saveHistory(); showError(error.message); }
+      const review = await requestJson(`/case6b/session/${encodeURIComponent(reviewContext.sessionId)}/review`);
+      if (!isCurrentReviewContext(reviewContext)) return;
+      state.review = review;
+      await renderReview(reviewContext);
+    } catch (error) {
+      if (!isCurrentReviewContext(reviewContext)) return;
+      item.expired = true; saveHistory(); showError(error.message);
+    }
   }
   closeSidebar();
 }
@@ -320,10 +353,16 @@ function beginProgress() {
   els.idle.hidden = true; els.progress.hidden = false; els.error.hidden = true; els.reviewPanel.hidden = true; els.downloadPanel.hidden = true;
   els.status.textContent = '处理中'; setStage('extract');
 }
-function handleEvent(event) {
+function analysisCancellationRequested(runToken) {
+  return state.analysisRunToken === runToken
+    && state.cancelRequested
+    && state.cancelRunToken === runToken;
+}
+function handleEvent(event, runToken) {
+  if (state.analysisRunToken !== runToken) return;
   if (event.run_id) {
     state.analysisRunId = event.run_id;
-    if (els.cancelAnalysis) els.cancelAnalysis.disabled = state.cancelRequested;
+    if (els.cancelAnalysis) els.cancelAnalysis.disabled = analysisCancellationRequested(runToken);
   }
   if (event.message) els.progressMessage.textContent = event.message;
   if (event.material_id) updateMaterialEvent(event);
@@ -333,29 +372,51 @@ function handleEvent(event) {
   if (event.type === 'fatal_error') throw new Error(event.message || '处理失败');
 }
 async function runAnalysis(url, options) {
-  state.analysisController = new AbortController();
+  const runToken = Symbol('case6b-analysis');
+  const controller = new AbortController();
+  let resolveCompletion;
+  const completion = new Promise(resolve => { resolveCompletion = resolve; });
+  const reviewContext = captureReviewContext();
+  state.analysisController = controller;
+  state.analysisRunToken = runToken;
+  state.analysisCompletion = completion;
   state.cancelRequested = false;
+  state.cancelRunToken = null;
   state.analysisRunId = null;
   setProcessing(true);
-  const requestOptions = { ...options, signal: state.analysisController.signal };
+  const requestOptions = { ...options, signal: controller.signal };
   let fatal = '';
   try {
     const response = await fetch(url, requestOptions);
     await readSse(response, event => {
-      try { handleEvent(event); } catch (error) { fatal = error.message; }
+      try { handleEvent(event, runToken); } catch (error) { fatal = error.message; }
     });
     if (fatal) throw new Error(fatal);
-    if (state.cancelRequested) return;
-    state.review = await requestJson(`/case6b/session/${encodeURIComponent(state.sessionId)}/review`);
-    await renderReview();
-    updateHistory({ title: state.template?.name || currentHistory()?.title || '服务协议草案', sessionId: state.sessionId });
+    if (analysisCancellationRequested(runToken) || !isCurrentReviewContext(reviewContext)) return;
+    const review = await requestJson(`/case6b/session/${encodeURIComponent(reviewContext.sessionId)}/review`);
+    if (analysisCancellationRequested(runToken) || !isCurrentReviewContext(reviewContext)) return;
+    state.review = review;
+    await renderReview(reviewContext);
+    if (analysisCancellationRequested(runToken) || !isCurrentReviewContext(reviewContext)) return;
+    updateHistory({ title: state.template?.name || currentHistory()?.title || '服务协议草案', sessionId: reviewContext.sessionId });
   } catch (error) {
-    if (error.name === 'AbortError' && state.cancelRequested) return;
+    if (
+      error.name === 'AbortError'
+      && (analysisCancellationRequested(runToken) || state.analysisRunToken !== runToken)
+    ) return;
+    if (state.analysisRunToken !== runToken) return;
     els.retry.hidden = false;
     throw error;
   } finally {
-    state.analysisController = null;
-    if (!state.cancelRequested) setProcessing(false);
+    if (state.analysisRunToken === runToken) {
+      state.analysisController = null;
+      state.analysisRunId = null;
+      state.analysisCompletion = null;
+      state.cancelRequested = false;
+      state.cancelRunToken = null;
+      setProcessing(false);
+    }
+    resolveCompletion();
   }
 }
 function renderTemplatePreflight(preflight) {
@@ -400,17 +461,29 @@ async function retryFailed(materialId = null) {
   catch (error) { showError(error.message); } finally { setBusy(false); }
 }
 async function cancelAnalysis() {
-  if (!state.sessionId || !state.analysisRunId || state.cancelRequested) return;
+  if (
+    !state.sessionId
+    || !state.analysisRunId
+    || !state.analysisRunToken
+    || !state.analysisController
+    || !state.analysisCompletion
+    || state.cancelRequested
+  ) return;
   const confirmed = window.confirm(
     '中断后将废弃本轮 OCR、摘要和字段结果，但会保留本页已选择的文件供你删换。确定继续吗？',
   );
   if (!confirmed) return;
+  const controller = state.analysisController;
+  const runToken = state.analysisRunToken;
+  const completion = state.analysisCompletion;
+  const reviewContext = captureReviewContext();
   state.cancelRequested = true;
+  state.cancelRunToken = runToken;
   if (els.cancelAnalysis) {
     els.cancelAnalysis.disabled = true;
     els.cancelAnalysis.textContent = '正在中断…';
   }
-  const abandonedSessionId = state.sessionId;
+  const abandonedSessionId = reviewContext.sessionId;
   const runId = state.analysisRunId;
   try {
     await requestJson(
@@ -422,20 +495,22 @@ async function cancelAnalysis() {
       },
     );
   } catch (error) {
+    if (!isCurrentReviewContext(reviewContext) || state.analysisRunToken !== runToken) return;
     if (error.code === 'STALE_ANALYSIS_RUN') {
       toast('任务状态刚刚发生变化；本地仍会退出本轮处理。');
     } else {
       toast('已停止等待；服务端任务可能继续到缓存过期，但不会影响新任务。');
     }
   } finally {
-    state.analysisController?.abort();
+    controller.abort();
+    await completion;
+    if (!isCurrentReviewContext(reviewContext) || state.analysisRunToken !== runToken) return;
+    invalidateReviewContext();
     state.sessionId = null;
-    state.analysisRunId = null;
+    state.analysisRunToken = null;
     state.review = null;
     state.documentView = null;
-    state.processing = false;
     state.busy = false;
-    state.cancelRequested = false;
     if (els.cancelAnalysis) {
       els.cancelAnalysis.hidden = true;
       els.cancelAnalysis.textContent = '中断并修改文件';
@@ -470,6 +545,9 @@ function syncReviewControls() {
   });
   els.reviewGroups?.querySelectorAll('textarea, input, select').forEach(control => {
     control.disabled = state.busy || control.dataset.locked === 'true';
+  });
+  els.conflictList?.querySelectorAll('select').forEach(control => {
+    control.disabled = state.busy || state.saveInFlight;
   });
   if (els.finalize) {
     els.finalize.disabled = state.busy || state.saveInFlight || state.dirty
@@ -612,25 +690,27 @@ function replaceMarker(container, marker, control) {
   startNode.parentNode.insertBefore(control, startNode.nextSibling);
   return true;
 }
-async function renderDocumentEditor() {
-  state.fallbackMode = false;
-  els.editorFallback.hidden = true;
-  els.documentCanvas.hidden = false;
+async function renderDocumentEditor(reviewContext) {
+  if (!isCurrentReviewContext(reviewContext) || !state.review) return false;
+  const review = state.review;
   els.documentLoading.hidden = false;
-  els.documentCanvas.innerHTML = '';
   if (!window.docx || typeof window.docx.renderAsync !== 'function') {
     throw new Error('Word 文档渲染组件未能加载');
   }
-  state.documentView = await requestJson(
-    `/case6b/session/${encodeURIComponent(state.sessionId)}/document-view`,
+  const documentView = await requestJson(
+    `/case6b/session/${encodeURIComponent(reviewContext.sessionId)}/document-view`,
   );
-  if (!String(state.documentView.shell_url || '').includes('/document-shell')) {
+  if (!isCurrentReviewContext(reviewContext)) return false;
+  if (!String(documentView.shell_url || '').includes('/document-shell')) {
     throw new Error('Word 草案地址无效');
   }
-  const shellResponse = await fetch(state.documentView.shell_url, { cache: 'no-store' });
+  const shellResponse = await fetch(documentView.shell_url, { cache: 'no-store' });
+  if (!isCurrentReviewContext(reviewContext)) return false;
   if (!shellResponse.ok) throw new Error(`Word 草案读取失败（HTTP ${shellResponse.status}）`);
   const shell = await shellResponse.blob();
-  await window.docx.renderAsync(shell, els.documentCanvas, null, {
+  if (!isCurrentReviewContext(reviewContext)) return false;
+  const renderHost = document.createElement('div');
+  await window.docx.renderAsync(shell, renderHost, renderHost, {
     className: 'c6b-docx',
     inWrapper: true,
     ignoreWidth: false,
@@ -638,20 +718,29 @@ async function renderDocumentEditor() {
     ignoreFonts: false,
     breakPages: true,
     useBase64URL: true,
+    renderAltChunks: false,
   });
-  els.documentCanvas.querySelectorAll('a').forEach(link => {
+  if (!isCurrentReviewContext(reviewContext)) return false;
+  renderHost.querySelectorAll('a').forEach(link => {
     link.removeAttribute('href'); link.removeAttribute('target');
   });
-  const metadata = new Map(state.documentView.fields.map(field => [field.field_id, field]));
-  for (const field of state.review.fields) {
+  const metadata = new Map(documentView.fields.map(field => [field.field_id, field]));
+  for (const field of review.fields) {
     const meta = metadata.get(field.field_id);
-    if (!meta || !replaceMarker(els.documentCanvas, meta.marker, createInlineField(field, meta))) {
+    if (!meta || !replaceMarker(renderHost, meta.marker, createInlineField(field, meta))) {
       throw new Error(`字段 ${field.field_id} 无法稳定映射到 Word 草案`);
     }
   }
+  if (!isCurrentReviewContext(reviewContext)) return false;
+  state.documentView = documentView;
+  state.fallbackMode = false;
+  els.editorFallback.hidden = true;
+  els.documentCanvas.hidden = false;
+  els.documentCanvas.replaceChildren(...Array.from(renderHost.childNodes));
   els.documentLoading.hidden = true;
   applyDocumentMode('draft');
   updatePendingNavigation();
+  return true;
 }
 function renderFallbackFields(reason) {
   state.fallbackMode = true;
@@ -746,7 +835,10 @@ function openEvidence(fieldId) {
   const badge = document.createElement('span'); badge.className = `c6b-evidence-status ${statusClass(field)}`; badge.textContent = statusLabel(field.status);
   const id = document.createElement('small'); id.textContent = field.field_id;
   els.evidenceBody.append(badge, id);
-  if (field.suggested_value && !state.draftValues.get(fieldId)) {
+  if (
+    field.can_confirm && field.group_key !== 'services'
+    && field.suggested_value && !state.draftValues.get(fieldId)
+  ) {
     const suggestion = document.createElement('div'); suggestion.className = 'c6b-suggestion';
     const copy = document.createElement('p'); copy.textContent = field.suggested_value;
     const accept = document.createElement('button'); accept.type = 'button'; accept.dataset.acceptFieldId = fieldId; accept.textContent = '采用建议';
@@ -823,10 +915,14 @@ function collectReview() {
   const conflict_resolutions = [...els.conflictList.querySelectorAll('[data-conflict-id]')]
     .filter(row => row.querySelector('select').value)
     .map(row => ({ conflict_id: row.dataset.conflictId, value: row.querySelector('select').value }));
+  const accepted_field_ids = [...state.acceptedFieldIds].filter(
+    fieldId => reviewField(fieldId)?.can_confirm
+      && reviewField(fieldId)?.group_key !== 'services',
+  );
   return {
     version: state.review.version,
     field_updates,
-    accepted_field_ids: [...state.acceptedFieldIds],
+    accepted_field_ids,
     service_rows,
     conflict_resolutions,
   };
@@ -851,17 +947,19 @@ function applySavedReview(review, preserveLocal) {
 }
 async function flushAutoSave() {
   clearTimeout(state.saveTimer);
-  if (!state.review || !state.dirty || state.savePaused) return !state.dirty;
+  if (!state.sessionId || !state.review || !state.dirty || state.savePaused) return !state.dirty;
   if (state.saveInFlight) { state.saveQueued = true; return false; }
+  const saveContext = captureReviewContext();
   const payload = collectReview();
   const generation = state.editGeneration;
   state.saveInFlight = true; state.saveQueued = false;
   setSaveStatus('自动保存 · 保存中', 'saving'); syncReviewControls();
   try {
     const review = await requestJson(
-      `/case6b/session/${encodeURIComponent(state.sessionId)}/review`,
+      `/case6b/session/${encodeURIComponent(saveContext.sessionId)}/review`,
       { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) },
     );
+    if (!isCurrentReviewContext(saveContext)) return false;
     const changedDuringSave = state.editGeneration !== generation;
     if (!changedDuringSave) {
       state.dirty = false; state.dirtyFieldIds.clear(); state.acceptedFieldIds.clear();
@@ -871,12 +969,15 @@ async function flushAutoSave() {
     if (changedDuringSave) { setReviewDirty(true); state.saveQueued = true; }
     return !changedDuringSave;
   } catch (error) {
+    if (!isCurrentReviewContext(saveContext)) return false;
     if (error.code === 'STALE_REVIEW') {
       state.savePaused = true;
       setSaveStatus('版本冲突 · 暂停保存', 'error');
       if (window.confirm('草案已在其他页面更新。重新加载服务器版本会放弃本页未保存修改，是否继续？')) {
-        state.review = await requestJson(`/case6b/session/${encodeURIComponent(state.sessionId)}/review`);
-        initializeReviewState(); await renderReview();
+        const review = await requestJson(`/case6b/session/${encodeURIComponent(saveContext.sessionId)}/review`);
+        if (!isCurrentReviewContext(saveContext)) return false;
+        state.review = review;
+        initializeReviewState(); await renderReview(saveContext);
       }
     } else {
       state.savePaused = true;
@@ -885,12 +986,14 @@ async function flushAutoSave() {
     }
     return false;
   } finally {
-    state.saveInFlight = false; syncReviewControls();
-    if (state.saveQueued && !state.savePaused) { state.saveQueued = false; scheduleAutoSave(0); }
+    if (isCurrentReviewContext(saveContext)) {
+      state.saveInFlight = false; syncReviewControls();
+      if (state.saveQueued && !state.savePaused) { state.saveQueued = false; scheduleAutoSave(0); }
+    }
   }
 }
-async function renderReview() {
-  if (!state.review) return;
+async function renderReview(reviewContext = captureReviewContext()) {
+  if (!state.review || !isCurrentReviewContext(reviewContext)) return;
   initializeReviewState();
   els.progress.hidden = true; els.error.hidden = true; els.reviewPanel.hidden = false;
   els.status.textContent = '草案审阅'; setStage('review');
@@ -898,10 +1001,13 @@ async function renderReview() {
   els.unresolvedCount.textContent = `${state.review.unresolved_count} 个待补充`;
   renderConflicts(state.review.conflicts || []);
   try {
-    await renderDocumentEditor();
+    const rendered = await renderDocumentEditor(reviewContext);
+    if (!rendered || !isCurrentReviewContext(reviewContext)) return;
   } catch (error) {
+    if (!isCurrentReviewContext(reviewContext)) return;
     renderFallbackFields(error.message);
   }
+  if (!isCurrentReviewContext(reviewContext)) return;
   syncReviewControls();
 }
 async function finalizeDraft() {
@@ -985,7 +1091,10 @@ async function resetCurrent(confirmFirst = true) {
 }
 function clearView(updateCurrent) {
   clearTimeout(state.saveTimer);
-  state.analysisController?.abort();
+  invalidateReviewContext();
+  const analysisController = state.analysisController;
+  state.analysisController = null; state.analysisRunToken = null; state.analysisCompletion = null; state.cancelRunToken = null;
+  analysisController?.abort();
   state.template = null; state.materials = []; state.sessionId = null; state.review = null; state.templatePreflight = null;
   state.documentView = null; state.analysisRunId = null; state.processing = false; state.cancelRequested = false;
   state.dirty = false; state.dirtyFieldIds = new Set(); state.acceptedFieldIds = new Set(); state.draftValues = new Map();
@@ -1002,7 +1111,10 @@ function clearView(updateCurrent) {
   if (updateCurrent && currentHistory()) updateHistory({ title: '新建草案', sessionId: null, expired: false });
   syncUploadControls();
 }
-function newTask() { if (state.busy) return; state.currentLocalId = null; ensureHistory(); clearView(false); closeSidebar(); }
+async function newTask() {
+  if (state.busy || !(await saveBeforeNavigation())) return;
+  state.currentLocalId = null; ensureHistory(); clearView(false); closeSidebar();
+}
 function closeSidebar() { els.sidebar.classList.remove('open'); els.sidebarOverlay.classList.remove('open'); }
 
 bindDropzone(els.templateDropzone, els.templateInput, files => setTemplate(files[0]));

@@ -335,6 +335,7 @@ class Case6BCoreTests(unittest.TestCase):
             "Word 内容控件": b"<w:sdt>",
             "文本框": b"<w:txbxContent>",
             "邮件合并域": b"MERGEFIELD",
+            "altChunk": b'<w:altChunk r:id="rId999"/>',
         }
         for expected, marker in markers.items():
             source = zipfile.ZipFile(io.BytesIO(base.getvalue()))
@@ -348,6 +349,56 @@ class Case6BCoreTests(unittest.TestCase):
             with self.subTest(expected=expected):
                 with self.assertRaisesRegex(ValueError, expected):
                     validate_template(output.getvalue(), "complex.docx")
+
+    def test_rejects_external_docx_preview_resources(self):
+        base = io.BytesIO()
+        document = Document()
+        document.add_paragraph("Field: ____________________")
+        document.save(base)
+        source = zipfile.ZipFile(io.BytesIO(base.getvalue()))
+        output = io.BytesIO()
+        relationship = (
+            b'<Relationship Id="rId999" '
+            b'Type="http://schemas.openxmlformats.org/officeDocument/2006/'
+            b'relationships/image" Target="https://attacker.invalid/pixel.png" '
+            b'TargetMode="External"/>'
+        )
+        with source, zipfile.ZipFile(output, "w") as target:
+            for item in source.infolist():
+                content = source.read(item.filename)
+                if item.filename == "word/_rels/document.xml.rels":
+                    content = content.replace(
+                        b"</Relationships>",
+                        relationship + b"</Relationships>",
+                    )
+                target.writestr(item, content)
+        with self.assertRaisesRegex(ValueError, "外部资源"):
+            validate_template(output.getvalue(), "external-resource.docx")
+
+    def test_rejects_docx_preview_style_injection(self):
+        base = io.BytesIO()
+        document = Document()
+        document.add_paragraph("Field: ____________________")
+        document.save(base)
+        source = zipfile.ZipFile(io.BytesIO(base.getvalue()))
+        output = io.BytesIO()
+        with source, zipfile.ZipFile(output, "w") as target:
+            for item in source.infolist():
+                content = source.read(item.filename)
+                if item.filename == "word/styles.xml":
+                    replacement = (
+                        b'w:styleId="Normal}{body{background:url('
+                        b'https://attacker.invalid/pixel)"'
+                    )
+                    self.assertIn(b'w:styleId="Normal"', content)
+                    content = content.replace(
+                        b'w:styleId="Normal"',
+                        replacement,
+                        1,
+                    )
+                target.writestr(item, content)
+        with self.assertRaisesRegex(ValueError, "样式标识"):
+            validate_template(output.getvalue(), "unsafe-style.docx")
 
     def test_extracts_xlsx_with_sheet_and_cell_evidence(self):
         content = (
@@ -508,6 +559,39 @@ class Case6BCoreTests(unittest.TestCase):
         self.assertEqual({}, local_results)
         self.assertEqual([], session.fields)
         self.assertEqual("pending", session.materials[0].status)
+
+    def test_agent_l_failure_marks_analysis_failed_and_allows_retry(self):
+        material = MaterialRecord("m1", "facts.pdf", "pdf", b"%PDF", 1)
+        material.status = "complete"
+        material.facts = [{"fact": "Provider is Example Limited"}]
+        session = Case6BSession(
+            template=validate_template(TEMPLATE.read_bytes(), TEMPLATE.name),
+            materials=[material],
+            field_manifest=extract_template_manifest(TEMPLATE.read_bytes()),
+        )
+        local_store = {"session": [session]}
+        local_results = {}
+        first_run_id = begin_analysis_run(session)
+
+        async def scenario():
+            handler = Case6BDraftingHandler()
+            with self.assertRaisesRegex(RuntimeError, "Agent L failed"):
+                async for _ in handler.analyze("session", local_store, local_results):
+                    pass
+
+        with patch(
+            "cases.case6b_service_agreement._run_agent_l",
+            new=AsyncMock(side_effect=RuntimeError("Agent L failed")),
+        ):
+            asyncio.run(scenario())
+
+        self.assertEqual("failed", session.analysis_state)
+        self.assertIsNone(session.active_task)
+        self.assertEqual({}, local_results)
+        retry_run_id = begin_analysis_run(session)
+        self.assertNotEqual(first_run_id, retry_run_id)
+        self.assertEqual("running", session.analysis_state)
+
     def test_agent_json_parser_accepts_fenced_object(self):
         parsed = parse_agent_json('```json\n{"fields": [], "conflicts": []}\n```')
         self.assertEqual([], parsed["fields"])

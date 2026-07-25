@@ -15,11 +15,13 @@ import subprocess
 import tempfile
 import uuid
 import zipfile
+import xml.etree.ElementTree as ET
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncGenerator
+from urllib.parse import urlsplit
 
 import fitz
 import httpx
@@ -73,6 +75,7 @@ _BLANK_RE = re.compile(r"_{4,}")
 _BRACKET_RE = re.compile(
     r"\[([A-Za-z\u3400-\u9fff][A-Za-z0-9_\u3400-\u9fff ]{0,80})\]"
 )
+_SAFE_STYLE_ID_RE = re.compile(r"^[\w.-]{1,128}$", re.UNICODE)
 _LOCATOR_RE = re.compile(
     r"^(?:paragraph:(?P<paragraph>\d+)|"
     r"table:(?P<table>\d+)/row:(?P<row>\d+)/cell:(?P<cell>\d+)/paragraph:(?P<cellpara>\d+))"
@@ -187,6 +190,78 @@ def _discard_analysis_results(session: Case6BSession) -> None:
     session.updated_at = datetime.utcnow()
 
 
+def _xml_local_name(value: str) -> str:
+    return value.rsplit("}", 1)[-1]
+
+
+def _validate_docx_preview_safety(archive: zipfile.ZipFile) -> None:
+    """Reject active/externally loaded OOXML features before browser preview."""
+
+    names = set(archive.namelist())
+    for name in names:
+        if not name.startswith("word/"):
+            continue
+        if name.endswith(".xml"):
+            raw = archive.read(name)
+            try:
+                root = ET.fromstring(raw)
+            except ET.ParseError as exc:
+                raise ValueError("DOCX 模板包含损坏的 Word XML") from exc
+            for element in root.iter():
+                local_name = _xml_local_name(str(element.tag))
+                namespace = (
+                    str(element.tag).split("}", 1)[0].lstrip("{").lower()
+                    if "}" in str(element.tag)
+                    else ""
+                )
+                if local_name == "altChunk":
+                    raise ValueError("V1 暂不支持包含 altChunk HTML 的 DOCX 模板")
+                if local_name == "pict" or "vml" in namespace:
+                    for value in element.attrib.values():
+                        compact_value = re.sub(r"\s+", "", str(value).lower())
+                        if any(
+                            token in compact_value
+                            for token in (
+                                "url(",
+                                "@import",
+                                "expression(",
+                                "javascript:",
+                                "position:fixed",
+                            )
+                        ):
+                            raise ValueError("DOCX 模板包含不安全的 VML 样式")
+                if name == "word/styles.xml":
+                    for attribute, value in element.attrib.items():
+                        if (
+                            _xml_local_name(str(attribute)) == "styleId"
+                            and not _SAFE_STYLE_ID_RE.fullmatch(str(value))
+                        ):
+                            raise ValueError("DOCX 模板包含不安全的样式标识")
+            if name == "word/styles.xml" and (
+                b"url(" in raw.lower() or b"@import" in raw.lower()
+            ):
+                raise ValueError("DOCX 模板包含不安全的外部样式")
+            continue
+        if not name.endswith(".rels"):
+            continue
+        try:
+            relationships = ET.fromstring(archive.read(name))
+        except ET.ParseError as exc:
+            raise ValueError("DOCX 模板包含损坏的关系定义") from exc
+        for relationship in relationships:
+            relationship_type = str(relationship.attrib.get("Type", ""))
+            target_mode = str(relationship.attrib.get("TargetMode", ""))
+            target = str(relationship.attrib.get("Target", ""))
+            if relationship_type.lower().endswith("/afchunk"):
+                raise ValueError("V1 暂不支持包含 altChunk HTML 的 DOCX 模板")
+            if target_mode.lower() != "external":
+                continue
+            if not relationship_type.lower().endswith("/hyperlink"):
+                raise ValueError("DOCX 模板包含不支持的外部资源")
+            if urlsplit(target).scheme.lower() not in {"http", "https", "mailto"}:
+                raise ValueError("DOCX 模板包含不安全的外部链接")
+
+
 def _open_docx(content: bytes) -> Document:
     if len(content) > MAX_TEMPLATE_BYTES:
         raise ValueError("DOCX 模板不能超过 10 MB")
@@ -208,6 +283,7 @@ def _open_docx(content: bytes) -> Document:
             for present, label in unsupported:
                 if present:
                     raise ValueError(f"V1 暂不支持包含{label}的 DOCX 模板")
+            _validate_docx_preview_safety(archive)
         return Document(io.BytesIO(content))
     except ValueError:
         raise
@@ -2709,6 +2785,12 @@ class Case6BDraftingHandler(CaseHandler):
         except asyncio.CancelledError:
             cancelled = True
             _discard_analysis_results(session)
+            raise
+        except Exception:
+            if not session.discard_requested:
+                session.analysis_state = "failed"
+                session.updated_at = datetime.utcnow()
+                session_results_store.pop(session_id, None)
             raise
         finally:
             session.active_task = None

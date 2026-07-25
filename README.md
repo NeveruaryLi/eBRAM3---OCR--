@@ -191,13 +191,14 @@ node --check static\case6a.js
 node --check static\case6b.js
 ```
 
-当前基线包含 108 项 Python 测试。外部 GPTBots、PaddleOCR、HKLII、LibreOffice 和 Word 仍需在目标环境进行集成验证。
+当前基线包含 118 项 Python 测试。外部 GPTBots、PaddleOCR、HKLII、LibreOffice 和 Word 仍需在目标环境进行集成验证。
 
 ## 已知限制与安全
 
 - Session、上传材料和结果保存在进程内存中，默认两小时 TTL；服务重启后不可恢复，不支持多实例共享。
 - Case 5 的 `ScrapedResult` 没有 `created_at`，现有自动清理会跳过其 Session；手动重置/删除仍可清理。
 - Case 6B 仅支持常规 DOCX 占位符，不支持内容控件、邮件合并域、文本框和复杂浮动 Word 对象。
+- Case 6B 浏览器预览会拒绝 `altChunk`、危险外部资源和异常样式标识；该预览按 Demo 的必要安全边界设计，正式环境仍应只接收可信来源的协议模板。
 - Case 6B 的 PDF 转换依赖本机 LibreOffice 或 Microsoft Word；两者均失败时仍保留 DOCX 下载。
 - Agent 和模型输出具有不确定性，费用、规则、译文和协议内容必须由业务人员复核。
 - 仓库当前为 Private，但旧公开 Git 历史曾包含真实 Agent A、Agent B 和 PaddleOCR 凭证，且尚未完成轮换；私有化不能使旧凭证自动失效。
