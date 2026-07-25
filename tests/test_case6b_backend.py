@@ -566,6 +566,58 @@ class Case6BCoreTests(unittest.TestCase):
         self.assertEqual("FILLED", target["status"])
         self.assertEqual(evidence, target["evidence"])
 
+    def test_review_can_accept_unchanged_agent_suggestion(self):
+        fields = json.loads((FIXTURES / "expected_fill.json").read_text("utf-8"))[
+            "fields"
+        ]
+        session = Case6BSession(
+            template=validate_template(TEMPLATE.read_bytes(), TEMPLATE.name),
+            materials=[],
+            field_manifest=json.loads(
+                (FIXTURES / "template_field_manifest.json").read_text("utf-8")
+            ),
+            fields=fields,
+            review_version=1,
+        )
+        target = next(field for field in fields if field["field_id"] == "p002_f02")
+        apply_review_changes(
+            session,
+            version=1,
+            field_updates=[],
+            service_rows=[],
+            accepted_field_ids=[target["field_id"]],
+        )
+        self.assertEqual("USER_CONFIRMED", target["status"])
+        self.assertEqual("user_confirmed", target["source_type"])
+
+    def test_review_change_invalidates_preview_artifacts(self):
+        fields = json.loads((FIXTURES / "expected_fill.json").read_text("utf-8"))[
+            "fields"
+        ]
+        session = Case6BSession(
+            template=validate_template(TEMPLATE.read_bytes(), TEMPLATE.name),
+            materials=[],
+            field_manifest=json.loads(
+                (FIXTURES / "template_field_manifest.json").read_text("utf-8")
+            ),
+            fields=fields,
+            review_version=1,
+            preview_docx=b"preview-docx",
+            preview_pdf=b"%PDF-preview",
+            preview_version=1,
+            preview_error="old",
+        )
+        apply_review_changes(
+            session,
+            version=1,
+            field_updates=[{"field_id": "p002_f01", "value": "1 August 2026"}],
+            service_rows=[],
+        )
+        self.assertIsNone(session.preview_docx)
+        self.assertIsNone(session.preview_pdf)
+        self.assertIsNone(session.preview_version)
+        self.assertIsNone(session.preview_error)
+
     def test_docx_fill_preserves_signature_blanks_and_removes_unused_service_rows(self):
         fields = json.loads((FIXTURES / "expected_fill.json").read_text("utf-8"))[
             "fields"
@@ -588,6 +640,39 @@ class Case6BCoreTests(unittest.TestCase):
             cell.text for table in document.tables for row in table.rows for cell in row.cells
         )
         self.assertIn("Signature:_________________________", signature_text)
+
+    def test_conflict_resolution_requires_unique_editable_target(self):
+        fields = json.loads((FIXTURES / "expected_fill.json").read_text("utf-8"))[
+            "fields"
+        ]
+        session = Case6BSession(
+            template=validate_template(TEMPLATE.read_bytes(), TEMPLATE.name),
+            materials=[],
+            field_manifest=json.loads(
+                (FIXTURES / "template_field_manifest.json").read_text("utf-8")
+            ),
+            fields=fields,
+            conflicts=[
+                {
+                    "conflict_id": "unknown-1",
+                    "semantic_key": "not_in_manifest",
+                    "candidates": [{"value": "A"}, {"value": "B"}],
+                    "resolved": False,
+                }
+            ],
+            review_version=1,
+        )
+        with self.assertRaisesRegex(ValueError, "唯一对应"):
+            apply_review_changes(
+                session,
+                version=1,
+                field_updates=[],
+                service_rows=[],
+                conflict_resolutions=[
+                    {"conflict_id": "unknown-1", "value": "A"}
+                ],
+            )
+        self.assertFalse(session.conflicts[0]["resolved"])
 
     def test_review_supports_optional_and_blank_service_rows(self):
         manifest = json.loads(
@@ -1167,6 +1252,71 @@ class Case6BRouteTests(unittest.TestCase):
         )
         self.assertEqual(200, report.status_code)
         self.assertTrue(report.content.startswith(b"PK"))
+
+    def test_preview_generates_inline_pdf_for_exact_review_version(self):
+        session_id = self._ready_session()
+        with (
+            patch("api.case6b_routes.render_draft_docx", return_value=b"preview-docx"),
+            patch("api.case6b_routes.convert_docx_to_pdf", return_value=b"%PDF-preview"),
+        ):
+            created = self.client.post(
+                f"/case6b/session/{session_id}/preview",
+                json={"version": 1},
+            )
+            preview = self.client.get(
+                f"/case6b/session/{session_id}/preview?version=1"
+            )
+        self.assertEqual(200, created.status_code, created.text)
+        self.assertTrue(created.json()["pdf_ready"])
+        self.assertEqual(200, preview.status_code)
+        self.assertEqual("application/pdf", preview.headers["content-type"])
+        self.assertEqual("inline", preview.headers["content-disposition"])
+        self.assertEqual(b"%PDF-preview", preview.content)
+
+    def test_preview_rejects_stale_version_and_reports_pdf_failure(self):
+        session_id = self._ready_session()
+        stale = self.client.post(
+            f"/case6b/session/{session_id}/preview",
+            json={"version": 9},
+        )
+        self.assertEqual(409, stale.status_code)
+        self.assertEqual("STALE_REVIEW", stale.json()["detail"]["code"])
+        with (
+            patch("api.case6b_routes.render_draft_docx", return_value=b"preview-docx"),
+            patch(
+                "api.case6b_routes.convert_docx_to_pdf",
+                side_effect=RuntimeError("PDF unavailable"),
+            ),
+        ):
+            failed = self.client.post(
+                f"/case6b/session/{session_id}/preview",
+                json={"version": 1},
+            )
+        self.assertFalse(failed.json()["pdf_ready"])
+        unavailable = self.client.get(
+            f"/case6b/session/{session_id}/preview?version=1"
+        )
+        self.assertEqual(404, unavailable.status_code)
+
+    def test_finalize_reuses_matching_preview_artifacts(self):
+        session_id = self._ready_session()
+        session = session_store[session_id][0]
+        session.preview_docx = b"preview-docx"
+        session.preview_pdf = b"%PDF-preview"
+        session.preview_version = 1
+        with (
+            patch("api.case6b_routes.render_draft_docx") as render,
+            patch("api.case6b_routes.convert_docx_to_pdf") as convert,
+        ):
+            finalized = self.client.post(
+                f"/case6b/session/{session_id}/finalize",
+                json={"version": 1, "allow_unresolved": True},
+            )
+        self.assertEqual(200, finalized.status_code, finalized.text)
+        self.assertEqual(b"preview-docx", session.generated_docx)
+        self.assertEqual(b"%PDF-preview", session.generated_pdf)
+        render.assert_not_called()
+        convert.assert_not_called()
 
     def test_finalize_is_blocked_by_unresolved_conflicts(self):
         session_id = self._ready_session()

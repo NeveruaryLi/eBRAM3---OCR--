@@ -14,7 +14,7 @@ eBRAM3 是一个面向法律及争议解决场景的 AI 工作台。系统以 Fa
 | Case 4 | 已实现 | 单份 PDF → PyMuPDF 拆页 → Agent I 图片翻译 → 按原页尺寸合并 | 英文与繁体中文双向译文 PDF；不支持追问 |
 | Case 5 | 已实现 | 关键词 → Playwright 检索 HKLII → Agent J 摘要 | HKLII 案例摘要；DOCX/PDF；支持追问 |
 | Case 6A | 已实现 | 用户问题 → Agent K + eBRAM 官网 RAG 知识库 | 双语服务指导回答与官方来源链接 |
-| Case 6B | 已实现 | DOCX 模板 + 事实材料 → Agent A 摘要 → Agent L 双阶段 → 人工审阅 | 服务协议草案；DOCX/PDF；不支持追问 |
+| Case 6B | 已实现 | DOCX 模板 + 事实材料 → Agent A 摘要 → Agent L 双阶段 → 预填预览与人工审阅 | 服务协议草案；DOCX/PDF；不支持追问 |
 
 ## 系统架构
 
@@ -131,7 +131,7 @@ Agent L 在同一 conversation 内执行两轮：
 1. 文本说明 + 原始 DOCX + `case6b_template_context.md`，解析全部字段语义。
 2. 文本说明 + `case6b_field_fill_context.md`，根据字段清单、材料事实和冲突输出填充结果。
 
-关键数据全部放在 Markdown 附件中，不依赖短期记忆。用户可审阅字段、证据、冲突和重复服务行；未解决冲突阻止生成，签名和签署日期保持空白。最终在原模板副本中精准替换占位符，分别生成 DOCX 和 PDF。
+关键数据全部放在 Markdown 附件中，不依赖短期记忆。Agent L 完成后，系统将答案回填原模板并生成 PDF 预览；桌面端采用“文档预览 + 字段编辑”双栏，移动端在两种视图间切换。用户可审阅证据、接受建议、补充缺失字段、处理冲突和重复服务行。未解决冲突阻止生成，普通待确认字段经风险确认后以黄色标记保留，签名和签署日期保持空白。最终在原模板副本中精准替换占位符，分别生成 DOCX 和 PDF。
 
 详细限制和审阅契约见 [项目交接文档](docs/HANDOVER.md) 与 [Agent L overview](GPTbots_.bot/generated/case6b/overview.md)。
 
@@ -153,7 +153,8 @@ Agent L 在同一 conversation 内执行两轮：
 | GET | `/case6b/session/{id}/template` | 模板自动预检结果 |
 | POST | `/case6b/session/{id}/retry` | 仅重试失败材料 |
 | GET/PATCH | `/case6b/session/{id}/review` | 读取或更新字段审阅 |
-| POST | `/case6b/session/{id}/finalize` | 确认风险并生成草案 |
+| POST/GET | `/case6b/session/{id}/preview` | 生成或内嵌读取当前审阅版本的 PDF 预览 |
+| POST | `/case6b/session/{id}/finalize` | 确认风险并生成正式文档 |
 
 ## 项目结构
 
@@ -182,7 +183,7 @@ node --check static\case6a.js
 node --check static\case6b.js
 ```
 
-本发布基线包含 99 项 Python 测试。外部 GPTBots、PaddleOCR、HKLII、LibreOffice 和 Word 仍需在目标环境进行集成验证。
+当前基线包含 105 项 Python 测试。外部 GPTBots、PaddleOCR、HKLII、LibreOffice 和 Word 仍需在目标环境进行集成验证。
 
 ## 已知限制与安全
 

@@ -60,6 +60,7 @@ class ConflictResolution(BaseModel):
 class ReviewUpdate(BaseModel):
     version: int = Field(ge=1)
     field_updates: list[FieldUpdate] = Field(default_factory=list, max_length=200)
+    accepted_field_ids: list[str] = Field(default_factory=list, max_length=200)
     service_rows: list[ServiceRowUpdate] = Field(default_factory=list, max_length=100)
     conflict_resolutions: list[ConflictResolution] = Field(
         default_factory=list, max_length=100
@@ -69,6 +70,10 @@ class ReviewUpdate(BaseModel):
 class FinalizeRequest(BaseModel):
     version: int = Field(ge=1)
     allow_unresolved: bool = False
+
+
+class PreviewRequest(BaseModel):
+    version: int = Field(ge=1)
 
 
 def _error(status: int, code: str, message: str) -> HTTPException:
@@ -258,11 +263,82 @@ async def update_case6b_review(session_id: str, body: ReviewUpdate):
                     resolution.model_dump()
                     for resolution in body.conflict_resolutions
                 ],
+                body.accepted_field_ids,
             )
         except ValueError as exc:
             code = "STALE_REVIEW" if "已更新" in str(exc) else "INVALID_REVIEW"
             raise _error(409 if code == "STALE_REVIEW" else 400, code, str(exc)) from exc
     return review_payload(session)
+
+
+@router.post("/session/{session_id}/preview")
+async def create_case6b_preview(session_id: str, body: PreviewRequest):
+    session = _session(session_id)
+    if session.lock.locked():
+        raise _error(409, "SESSION_BUSY", "当前草案正在处理中，请稍候")
+    if not session.fields:
+        raise _error(409, "REVIEW_NOT_READY", "字段分析尚未完成")
+    if body.version != session.review_version:
+        raise _error(409, "STALE_REVIEW", "审阅内容已更新，请刷新后再预览")
+    async with session.lock:
+        if (
+            session.preview_version != session.review_version
+            or session.preview_docx is None
+        ):
+            try:
+                session.preview_docx = await asyncio.to_thread(
+                    render_draft_docx,
+                    session.template.content,
+                    session.field_manifest,
+                    session.fields,
+                    session.template.language,
+                )
+            except ValueError as exc:
+                raise _error(
+                    400, "PREVIEW_GENERATION_FAILED", str(exc)
+                ) from exc
+            session.preview_pdf = None
+            session.preview_error = None
+            try:
+                session.preview_pdf = await asyncio.to_thread(
+                    convert_docx_to_pdf,
+                    session.preview_docx,
+                    session.template.filename,
+                )
+            except Exception as exc:
+                session.preview_error = str(exc)
+            session.preview_version = session.review_version
+            session.updated_at = datetime.utcnow()
+    preview_url = (
+        f"/case6b/session/{session_id}/preview"
+        f"?version={session.review_version}"
+    )
+    return {
+        "version": session.review_version,
+        "pdf_ready": session.preview_pdf is not None,
+        "pdf_error": session.preview_error,
+        "preview_url": preview_url,
+    }
+
+
+@router.get("/session/{session_id}/preview")
+async def get_case6b_preview(
+    session_id: str,
+    version: int = Query(ge=1),
+):
+    session = _session(session_id)
+    if version != session.review_version:
+        raise _error(409, "STALE_REVIEW", "审阅内容已更新，请刷新后再预览")
+    if session.preview_version != version or session.preview_pdf is None:
+        raise _error(404, "PREVIEW_UNAVAILABLE", "当前版本的 PDF 预览尚未生成")
+    return Response(
+        content=session.preview_pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": "inline",
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.post("/session/{session_id}/finalize")
@@ -286,26 +362,34 @@ async def finalize_case6b(session_id: str, body: FinalizeRequest):
             f"仍有 {review['unresolved_count']} 个必填字段待确认",
         )
     async with session.lock:
-        try:
-            session.generated_docx = await asyncio.to_thread(
-                render_draft_docx,
-                session.template.content,
-                session.field_manifest,
-                session.fields,
-                session.template.language,
-            )
-        except ValueError as exc:
-            raise _error(400, "DRAFT_GENERATION_FAILED", str(exc)) from exc
-        session.generated_pdf = None
-        session.pdf_error = None
-        try:
-            session.generated_pdf = await asyncio.to_thread(
-                convert_docx_to_pdf,
-                session.generated_docx,
-                session.template.filename,
-            )
-        except Exception as exc:
-            session.pdf_error = str(exc)
+        if (
+            session.preview_version == session.review_version
+            and session.preview_docx is not None
+        ):
+            session.generated_docx = session.preview_docx
+            session.generated_pdf = session.preview_pdf
+            session.pdf_error = session.preview_error
+        else:
+            try:
+                session.generated_docx = await asyncio.to_thread(
+                    render_draft_docx,
+                    session.template.content,
+                    session.field_manifest,
+                    session.fields,
+                    session.template.language,
+                )
+            except ValueError as exc:
+                raise _error(400, "DRAFT_GENERATION_FAILED", str(exc)) from exc
+            session.generated_pdf = None
+            session.pdf_error = None
+            try:
+                session.generated_pdf = await asyncio.to_thread(
+                    convert_docx_to_pdf,
+                    session.generated_docx,
+                    session.template.filename,
+                )
+            except Exception as exc:
+                session.pdf_error = str(exc)
         session.updated_at = datetime.utcnow()
         result = session_results_store.setdefault(
             session_id,

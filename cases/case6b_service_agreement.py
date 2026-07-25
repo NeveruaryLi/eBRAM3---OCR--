@@ -112,6 +112,10 @@ class Case6BSession:
     template_version: int = 1
     full_summary: dict[str, Any] | None = None
     review_version: int = 0
+    preview_docx: bytes | None = None
+    preview_pdf: bytes | None = None
+    preview_version: int | None = None
+    preview_error: str | None = None
     generated_docx: bytes | None = None
     generated_pdf: bytes | None = None
     pdf_error: str | None = None
@@ -1145,6 +1149,7 @@ def apply_review_changes(
     field_updates: list[dict[str, Any]],
     service_rows: list[dict[str, Any]],
     conflict_resolutions: list[dict[str, Any]] | None = None,
+    accepted_field_ids: list[str] | None = None,
 ) -> int:
     if version != session.review_version:
         raise ValueError("审阅内容已更新，请刷新后再提交")
@@ -1173,6 +1178,27 @@ def apply_review_changes(
         fields_by_id[field_id]["value"] = value
         fields_by_id[field_id]["evidence"] = (
             [{"source": "User confirmation", "fact": value}] if value else []
+        )
+    for field_id in accepted_field_ids or []:
+        if field_id not in fields_by_id or field_id not in manifest_by_id:
+            raise ValueError(f"未知字段：{field_id}")
+        definition = manifest_by_id[field_id]
+        target = fields_by_id[field_id]
+        if (
+            definition.get("field_kind") in SIGNATURE_KINDS
+            or definition.get("group_key") == "services"
+        ):
+            raise ValueError("该字段不能单独接受建议")
+        value = str(target.get("value", "")).strip()
+        if not value:
+            raise ValueError("空白字段没有可接受的建议值")
+        target.setdefault("original", deepcopy(target))
+        target.update(
+            {
+                "status": "USER_CONFIRMED",
+                "source_type": "user_confirmed",
+                "evidence": [{"source": "User confirmation", "fact": value}],
+            }
         )
     for row in service_rows:
         group_index = int(row.get("group_index", 0))
@@ -1255,9 +1281,6 @@ def apply_review_changes(
         value = str(resolution.get("value", "")).strip()
         if not value:
             raise ValueError("冲突解决值不能为空")
-        conflict["resolved"] = True
-        conflict["resolved_value"] = value
-        conflict["source_type"] = "user_confirmed"
         matching_definitions = [
             definition
             for definition in session.field_manifest["fields"]
@@ -1265,23 +1288,31 @@ def apply_review_changes(
             and definition.get("group_key") != "services"
             and definition.get("field_kind") not in SIGNATURE_KINDS
         ]
-        if len(matching_definitions) == 1:
-            target = fields_by_id[matching_definitions[0]["field_id"]]
-            target.setdefault("original", deepcopy(target))
-            target.update(
-                {
-                    "status": "USER_CONFIRMED",
-                    "value": value,
-                    "evidence": [
-                        {
-                            "source": "User conflict resolution",
-                            "fact": value,
-                        }
-                    ],
-                    "source_type": "user_confirmed",
-                }
-            )
+        if len(matching_definitions) != 1:
+            raise ValueError("冲突无法唯一对应到可编辑字段")
+        target = fields_by_id[matching_definitions[0]["field_id"]]
+        target.setdefault("original", deepcopy(target))
+        target.update(
+            {
+                "status": "USER_CONFIRMED",
+                "value": value,
+                "evidence": [
+                    {
+                        "source": "User conflict resolution",
+                        "fact": value,
+                    }
+                ],
+                "source_type": "user_confirmed",
+            }
+        )
+        conflict["resolved"] = True
+        conflict["resolved_value"] = value
+        conflict["source_type"] = "user_confirmed"
     session.review_version += 1
+    session.preview_docx = None
+    session.preview_pdf = None
+    session.preview_version = None
+    session.preview_error = None
     session.generated_docx = None
     session.generated_pdf = None
     session.pdf_error = None
@@ -1308,6 +1339,12 @@ def review_payload(session: Case6BSession) -> dict[str, Any]:
                 "group_index": definition.get("group_index"),
                 "required": bool(definition.get("required")),
                 "editable": definition.get("field_kind") not in SIGNATURE_KINDS,
+                "can_confirm": (
+                    definition.get("field_kind") not in SIGNATURE_KINDS
+                    and definition.get("group_key") != "services"
+                    and bool(str(value.get("value", "")).strip())
+                    and value.get("status") != "USER_CONFIRMED"
+                ),
                 "source_type": value.get("source_type")
                 or (
                     "user_confirmed"
@@ -1328,8 +1365,18 @@ def review_payload(session: Case6BSession) -> dict[str, Any]:
         "unresolved_count": sum(
             1
             for field in fields
-            if field["required"] and field["status"] == "NEEDS_CONFIRMATION"
+            if (
+                field["required"]
+                and field["field_kind"] not in SIGNATURE_KINDS
+                and field["status"] not in {"FILLED", "USER_CONFIRMED"}
+            )
         ),
+        "preview_ready": (
+            session.preview_pdf is not None
+            and session.preview_version == session.review_version
+        ),
+        "preview_version": session.preview_version,
+        "preview_error": session.preview_error,
         "docx_ready": session.generated_docx is not None,
         "pdf_ready": session.generated_pdf is not None,
         "pdf_error": session.pdf_error,
@@ -1850,6 +1897,14 @@ def _validate_agent_fields(
                 item["evidence"] = []
             if item["status"] == "FILLED" and not item.get("evidence"):
                 raise ValueError("Agent 已填字段缺少证据来源")
+            if item["status"] == "FILLED":
+                for evidence in item.get("evidence", []):
+                    if (
+                        not isinstance(evidence, dict)
+                        or not str(evidence.get("source", "")).strip()
+                        or not str(evidence.get("fact", "")).strip()
+                    ):
+                        raise ValueError("Agent 已填字段的证据格式无效")
             if item["status"] == "FILLED" and not str(item.get("value", "")).strip():
                 raise ValueError("Agent 已填字段缺少字段值")
             if item["status"] in {

@@ -132,26 +132,64 @@
     </section>
 
     <section class="c6b-review" id="reviewPanel" hidden aria-labelledby="reviewTitle">
-      <div class="c6b-review-head">
-        <div>
-          <span>REVIEW / 04</span>
-          <h2 id="reviewTitle">审阅协议字段</h2>
-          <p>展开证据核对 Agent 建议；签署区保持空白。</p>
-        </div>
-        <div class="c6b-review-meta">
-          <span id="fieldCount">0 个字段</span>
-          <span class="warning" id="unresolvedCount">0 个待确认</span>
-        </div>
+      <div class="c6b-review-tabs" id="reviewTabs" role="tablist" aria-label="草案审阅视图">
+        <button type="button" role="tab" data-review-view="preview" aria-selected="true">文档预览</button>
+        <button type="button" role="tab" data-review-view="fields" aria-selected="false">待补字段</button>
       </div>
-      <div class="c6b-conflicts" id="conflictPanel" hidden>
-        <h3>材料冲突</h3>
-        <p>请选择经核对后的值；未解决冲突将阻止生成草案。</p>
-        <div id="conflictList"></div>
-      </div>
-      <div class="c6b-review-groups" id="reviewGroups"></div>
-      <div class="c6b-review-actions">
-        <button class="c6b-secondary-btn" id="saveReviewBtn" type="button">保存字段修订</button>
-        <button class="c6b-primary-btn" id="finalizeBtn" type="button">生成 DOCX 与 PDF</button>
+      <div class="c6b-review-workbench" id="reviewWorkbench" data-mobile-view="preview">
+        <article class="c6b-preview-pane" id="previewPane" aria-labelledby="previewTitle">
+          <div class="c6b-preview-toolbar">
+            <div>
+              <span>DOCUMENT PREVIEW</span>
+              <h2 id="previewTitle">原模板预填草案</h2>
+            </div>
+            <span class="c6b-preview-state" id="previewStatus">等待生成</span>
+          </div>
+          <div class="c6b-paper-stage">
+            <iframe id="previewFrame" title="服务协议草案 PDF 预览" hidden></iframe>
+            <div class="c6b-preview-fallback" id="previewFallback" role="status">
+              <div class="c6b-preview-sheet" aria-hidden="true"><i></i><i></i><i></i></div>
+              <strong>正在准备文档预览</strong>
+              <p>系统会把 Agent L 的建议写回原模板；缺失内容以黄色待确认标记显示。</p>
+            </div>
+          </div>
+          <p class="c6b-preview-note">预览保持原 Word 版式。黄色标记代表材料不足，签署区将在正式文件中继续留空。</p>
+        </article>
+
+        <aside class="c6b-editor-pane" id="editorPane" aria-labelledby="reviewTitle">
+          <div class="c6b-review-head">
+            <div>
+              <span>REVIEW / 04</span>
+              <h2 id="reviewTitle">核对并补充字段</h2>
+              <p>材料答案已预填；可修改、接受建议或处理冲突。</p>
+            </div>
+            <div class="c6b-review-meta">
+              <span id="fieldCount">0 个字段</span>
+              <span class="warning" id="unresolvedCount">0 个待确认</span>
+              <span class="c6b-save-state" id="dirtyBadge">已保存</span>
+            </div>
+          </div>
+          <div class="c6b-review-filters" id="reviewFilters" aria-label="筛选审阅字段">
+            <button type="button" data-filter="pending" aria-pressed="true">待补充</button>
+            <button type="button" data-filter="filled" aria-pressed="false">材料已填</button>
+            <button type="button" data-filter="conflicts" aria-pressed="false">冲突</button>
+            <button type="button" data-filter="signature" aria-pressed="false">签署时填写</button>
+            <button type="button" data-filter="all" aria-pressed="false">全部</button>
+          </div>
+          <div class="c6b-editor-scroll">
+            <div class="c6b-conflicts" id="conflictPanel" hidden>
+              <h3>材料冲突</h3>
+              <p>请选择经核对后的值；未解决冲突将阻止生成正式文档。</p>
+              <div id="conflictList"></div>
+            </div>
+            <div class="c6b-review-groups" id="reviewGroups"></div>
+            <div class="c6b-filter-empty" id="filterEmpty" hidden>当前分类没有需要处理的字段。</div>
+          </div>
+          <div class="c6b-review-actions">
+            <button class="c6b-secondary-btn" id="saveReviewBtn" type="button" disabled>保存并刷新预览</button>
+            <button class="c6b-primary-btn" id="finalizeBtn" type="button">生成正式文档</button>
+          </div>
+        </aside>
       </div>
     </section>
 

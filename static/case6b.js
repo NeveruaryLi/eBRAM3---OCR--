@@ -11,6 +11,10 @@ const state = {
   busy: false,
   history: [],
   currentLocalId: null,
+  dirty: false,
+  acceptedFieldIds: new Set(),
+  activeFilter: 'pending',
+  previewReady: false,
 };
 
 const $ = id => document.getElementById(id);
@@ -34,6 +38,10 @@ const els = {
   templateActions: $('templateActions'), replaceTemplate: $('replaceTemplateBtn'),
   removeTemplate: $('removeTemplateBtn'), conflictPanel: $('conflictPanel'),
   conflictList: $('conflictList'),
+  reviewWorkbench: $('reviewWorkbench'), reviewTabs: $('reviewTabs'),
+  previewFrame: $('previewFrame'), previewFallback: $('previewFallback'),
+  previewStatus: $('previewStatus'), reviewFilters: $('reviewFilters'),
+  dirtyBadge: $('dirtyBadge'), filterEmpty: $('filterEmpty'),
 };
 
 function localId() { return `c6b_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`; }
@@ -52,11 +60,12 @@ function setStage(name) {
 }
 function setBusy(value) {
   state.busy = value;
-  [els.start, els.retry, els.saveReview, els.finalize, els.reset, els.newTask].forEach(button => {
+  [els.start, els.retry, els.reset, els.newTask].forEach(button => {
     if (button) button.disabled = value;
   });
   document.querySelectorAll('.c6b-retry-one').forEach(button => { button.disabled = value; });
   syncUploadControls();
+  syncReviewControls();
   updateStartButton();
 }
 function syncUploadControls() {
@@ -135,8 +144,11 @@ async function switchHistory(item) {
   clearView(false); state.currentLocalId = item.id; state.sessionId = item.sessionId || null; renderHistory();
   syncUploadControls();
   if (state.sessionId) {
-    try { state.review = await requestJson(`/case6b/session/${encodeURIComponent(state.sessionId)}/review`); renderReview(); }
-    catch (error) { item.expired = true; saveHistory(); showError(error.message); }
+    try {
+      state.review = await requestJson(`/case6b/session/${encodeURIComponent(state.sessionId)}/review`);
+      renderReview();
+      await createPreview();
+    } catch (error) { item.expired = true; saveHistory(); showError(error.message); }
   }
   closeSidebar();
 }
@@ -219,11 +231,17 @@ async function requestJson(url, options = {}) {
   const response = await fetch(url, options);
   if (!response.ok) {
     let message = `请求失败（HTTP ${response.status}）`;
+    let code = '';
     try {
-      const detail = (await response.json()).detail;
+      const payload = await response.json();
+      const detail = payload?.detail;
       message = typeof detail === 'string' ? detail : (detail && detail.message) || message;
+      code = typeof detail === 'object' ? detail.code || '' : '';
     } catch { /* response was not JSON */ }
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = response.status;
+    error.code = code;
+    throw error;
   }
   return response.status === 204 ? {} : response.json();
 }
@@ -290,7 +308,9 @@ async function runAnalysis(url, options) {
   if (fatal) throw new Error(fatal);
   try {
     state.review = await requestJson(`/case6b/session/${encodeURIComponent(state.sessionId)}/review`);
-    renderReview(); updateHistory({ title: state.template?.name || currentHistory()?.title || '服务协议草案', sessionId: state.sessionId });
+    renderReview();
+    await createPreview({ manageBusy: false });
+    updateHistory({ title: state.template?.name || currentHistory()?.title || '服务协议草案', sessionId: state.sessionId });
   } catch (error) {
     els.retry.hidden = false; throw error;
   }
@@ -340,6 +360,105 @@ function showError(message) {
   els.error.hidden = false; els.errorMessage.textContent = message; els.status.textContent = '未完成';
 }
 
+function syncReviewControls() {
+  if (!els.reviewPanel) return;
+  els.reviewPanel.querySelectorAll('textarea, input, select').forEach(control => {
+    const serviceRow = control.closest('[data-group-index]');
+    const disabledByAction = serviceRow
+      && ['name', 'price'].includes(control.dataset.role)
+      && ['blank', 'remove'].includes(serviceRow.dataset.action);
+    control.disabled = state.busy || control.dataset.locked === 'true' || disabledByAction;
+  });
+  els.reviewPanel.querySelectorAll('.c6b-accept-btn').forEach(button => {
+    button.disabled = state.busy || state.acceptedFieldIds.has(button.dataset.fieldId);
+  });
+  els.saveReview.disabled = state.busy || !state.dirty;
+  els.finalize.disabled = state.busy || state.dirty
+    || Number(state.review?.unresolved_conflict_count || 0) > 0;
+}
+function clearPreview(message = '保存字段后即可刷新文档预览。') {
+  state.previewReady = false;
+  els.previewFrame.hidden = true;
+  els.previewFrame.removeAttribute('src');
+  els.previewFallback.hidden = false;
+  els.previewFallback.querySelector('strong').textContent = '预览需要刷新';
+  els.previewFallback.querySelector('p').textContent = message;
+  els.previewStatus.textContent = '待刷新';
+  els.previewStatus.className = 'c6b-preview-state stale';
+}
+function setReviewDirty(value = true) {
+  state.dirty = value;
+  if (value) {
+    els.downloadPanel.hidden = true;
+    clearPreview();
+  }
+  els.dirtyBadge.textContent = value ? '未保存' : '已保存';
+  els.dirtyBadge.classList.toggle('dirty', value);
+  syncReviewControls();
+}
+function setReviewView(view) {
+  els.reviewWorkbench.dataset.mobileView = view;
+  els.reviewTabs.querySelectorAll('[data-review-view]').forEach(button => {
+    button.setAttribute('aria-selected', String(button.dataset.reviewView === view));
+  });
+}
+async function createPreview({ manageBusy = true } = {}) {
+  if (!state.review || !state.sessionId || state.dirty) return false;
+  if (manageBusy) setBusy(true);
+  els.previewFrame.hidden = true;
+  els.previewFallback.hidden = false;
+  els.previewFallback.querySelector('strong').textContent = '正在生成原模板预览';
+  els.previewFallback.querySelector('p').textContent = '正在预填字段并转换为 PDF，请稍候…';
+  els.previewStatus.textContent = '生成中';
+  els.previewStatus.className = 'c6b-preview-state loading';
+  try {
+    const result = await requestJson(
+      `/case6b/session/${encodeURIComponent(state.sessionId)}/preview`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: state.review.version }),
+      },
+    );
+    if (!result.pdf_ready) {
+      state.previewReady = false;
+      els.previewStatus.textContent = 'PDF 不可用';
+      els.previewStatus.className = 'c6b-preview-state error';
+      els.previewFallback.querySelector('strong').textContent = '暂时无法显示 PDF 预览';
+      els.previewFallback.querySelector('p').textContent =
+        `${result.pdf_error || '文档转换失败'}；字段仍可审阅，DOCX 正式文件仍可生成。`;
+      return false;
+    }
+    state.previewReady = true;
+    state.review.preview_ready = true;
+    state.review.preview_version = result.version;
+    els.previewFallback.hidden = true;
+    els.previewFrame.hidden = false;
+    const separator = result.preview_url.includes('?') ? '&' : '?';
+    els.previewFrame.src = `${result.preview_url}${separator}_=${Date.now()}`;
+    els.previewStatus.textContent = `版本 ${result.version}`;
+    els.previewStatus.className = 'c6b-preview-state ready';
+    return true;
+  } catch (error) {
+    if (error.code === 'STALE_REVIEW') {
+      state.review = await requestJson(
+        `/case6b/session/${encodeURIComponent(state.sessionId)}/review`,
+      );
+      renderReview();
+      toast('审阅版本已更新，请重新检查字段');
+    } else {
+      state.previewReady = false;
+      els.previewStatus.textContent = '预览失败';
+      els.previewStatus.className = 'c6b-preview-state error';
+      els.previewFallback.querySelector('strong').textContent = '无法生成 PDF 预览';
+      els.previewFallback.querySelector('p').textContent =
+        `${error.message}；字段仍可审阅，DOCX 正式文件仍可生成。`;
+    }
+    return false;
+  } finally {
+    if (manageBusy) setBusy(false);
+  }
+}
 function fieldGroup(field) {
   const key = field.semantic_key || '';
   if (field.group_key === 'services') return '服务与价格';
@@ -352,31 +471,94 @@ function fieldGroup(field) {
 function statusLabel(status) {
   return ({ FILLED: '证据已填', USER_CONFIRMED: '人工确认', NEEDS_CONFIRMATION: '待确认', REMOVE: '不使用', KEEP_BLANK: '保留空白', LEAVE_BLANK: '签署时填写' })[status] || status;
 }
-function evidenceText(field) {
+function makeEvidence(field) {
   const evidence = Array.isArray(field.evidence) ? field.evidence : [];
-  return evidence.map(item => `${item.source || '来源'}：${item.fact || ''}`).join('；') || '暂无直接证据';
+  const details = document.createElement('details');
+  details.className = 'c6b-field-evidence';
+  const summary = document.createElement('summary');
+  summary.textContent = evidence.length ? `查看材料证据（${evidence.length}）` : '暂无直接证据';
+  details.appendChild(summary);
+  if (evidence.length) {
+    const list = document.createElement('ul');
+    evidence.forEach(item => {
+      const entry = document.createElement('li');
+      const source = document.createElement('strong');
+      source.textContent = item.source || '来源';
+      const fact = document.createElement('span');
+      const locator = item.locator || item.location || item.source_location || '';
+      fact.textContent = `${item.fact || ''}${locator ? ` · ${locator}` : ''}`;
+      entry.append(source, fact);
+      list.appendChild(entry);
+    });
+    details.appendChild(list);
+  }
+  return details;
 }
+function markFieldDirty() { setReviewDirty(true); }
 function makeScalarField(field) {
-  const row = document.createElement('div'); row.className = 'c6b-field-row'; row.dataset.fieldId = field.field_id;
+  const row = document.createElement('div');
+  row.className = `c6b-field-row${field.status === 'NEEDS_CONFIRMATION' ? ' needs-attention' : ''}`;
+  row.dataset.fieldId = field.field_id;
+  row.dataset.status = field.status;
+  row.dataset.kind = field.field_kind || 'scalar';
   const label = document.createElement('div'); label.className = 'c6b-field-label';
+  const labelTop = document.createElement('div'); labelTop.className = 'c6b-field-label-top';
   const strong = document.createElement('strong'); strong.textContent = field.label || field.field_id;
-  const id = document.createElement('small'); id.textContent = field.field_id; label.append(strong, id);
-  const valueWrap = document.createElement('div');
-  const input = document.createElement('textarea'); input.className = 'c6b-field-input'; input.rows = 1; input.value = field.value || '';
-  input.disabled = !field.editable; input.dataset.kind = 'scalar';
-  const evidence = document.createElement('div'); evidence.className = 'c6b-field-evidence'; evidence.textContent = evidenceText(field);
-  valueWrap.append(input, evidence);
-  const status = document.createElement('span'); status.className = `c6b-field-status ${field.status === 'NEEDS_CONFIRMATION' ? 'pending' : ''} ${!field.editable ? 'locked' : ''}`; status.textContent = statusLabel(field.status);
+  const status = document.createElement('span');
+  status.className = `c6b-field-status ${field.status === 'NEEDS_CONFIRMATION' ? 'pending' : ''} ${!field.editable ? 'locked' : ''}`;
+  status.textContent = statusLabel(field.status);
   status.dataset.sourceType = field.source_type || 'evidence';
-  if (field.source_type === 'template_default') status.textContent += ' · 模板默认值';
-  row.append(label, valueWrap, status); return row;
+  labelTop.append(strong, status);
+  const id = document.createElement('small'); id.textContent = field.field_id;
+  label.append(labelTop, id);
+  const valueWrap = document.createElement('div'); valueWrap.className = 'c6b-field-value';
+  const input = document.createElement('textarea');
+  input.className = 'c6b-field-input';
+  input.rows = 1;
+  input.value = field.value || '';
+  input.dataset.kind = 'scalar';
+  input.dataset.locked = String(!field.editable);
+  input.disabled = !field.editable;
+  input.addEventListener('input', markFieldDirty);
+  valueWrap.append(input);
+  if (field.can_confirm) {
+    const accept = document.createElement('button');
+    accept.type = 'button';
+    accept.className = 'c6b-accept-btn';
+    accept.dataset.fieldId = field.field_id;
+    accept.textContent = '接受当前建议';
+    accept.addEventListener('click', () => {
+      state.acceptedFieldIds.add(field.field_id);
+      accept.textContent = '已接受，待保存';
+      row.classList.add('accepted-pending');
+      setReviewDirty(true);
+      syncReviewControls();
+    });
+    valueWrap.appendChild(accept);
+  }
+  valueWrap.appendChild(makeEvidence(field));
+  row.append(label, valueWrap);
+  return row;
 }
 function makeServiceRow(groupIndex, fields) {
   const nameField = fields.find(field => field.field_kind === 'repeatable_service');
   const priceField = fields.find(field => field.field_kind === 'repeatable_price');
-  const row = document.createElement('div'); row.className = 'c6b-field-row'; row.dataset.groupIndex = groupIndex;
-  row.dataset.action = fields.every(field => field.status === 'REMOVE') ? 'remove' : (nameField?.service_action || (fields.every(field => field.status === 'KEEP_BLANK') ? 'blank' : 'included'));
-  const label = document.createElement('div'); label.className = 'c6b-field-label'; label.innerHTML = `<strong>服务 ${groupIndex}</strong><small>名称与价格成对处理</small>`;
+  const pending = fields.some(field => field.status === 'NEEDS_CONFIRMATION');
+  const row = document.createElement('div');
+  row.className = `c6b-field-row${pending ? ' needs-attention' : ''}`;
+  row.dataset.groupIndex = groupIndex;
+  row.dataset.status = pending ? 'NEEDS_CONFIRMATION' : (fields[0]?.status || 'FILLED');
+  row.dataset.kind = 'service';
+  row.dataset.action = fields.every(field => field.status === 'REMOVE')
+    ? 'remove'
+    : (nameField?.service_action || (fields.every(field => field.status === 'KEEP_BLANK') ? 'blank' : 'included'));
+  const label = document.createElement('div'); label.className = 'c6b-field-label';
+  const labelTop = document.createElement('div'); labelTop.className = 'c6b-field-label-top';
+  const title = document.createElement('strong'); title.textContent = `服务 ${groupIndex}`;
+  const status = document.createElement('span'); status.className = `c6b-field-status${pending ? ' pending' : ''}`; status.textContent = pending ? '待确认' : '服务行';
+  labelTop.append(title, status);
+  const help = document.createElement('small'); help.textContent = '名称与价格成对处理';
+  label.append(labelTop, help);
   const controls = document.createElement('div'); controls.className = 'c6b-service-controls';
   const name = document.createElement('input'); name.className = 'c6b-field-input'; name.value = nameField?.value || ''; name.placeholder = '服务名称'; name.dataset.role = 'name';
   const price = document.createElement('input'); price.className = 'c6b-field-input'; price.value = priceField?.value || ''; price.placeholder = '价格及计费单位'; price.dataset.role = 'price';
@@ -384,84 +566,205 @@ function makeServiceRow(groupIndex, fields) {
   [['included','正式服务'],['optional','可选服务'],['blank','保留空白'],['remove','移除']].forEach(([value, labelText]) => {
     const option = document.createElement('option'); option.value = value; option.textContent = labelText; option.selected = value === row.dataset.action; action.appendChild(option);
   });
-  const sync = () => { row.dataset.action = action.value; name.disabled = price.disabled = ['blank','remove'].includes(action.value); };
-  action.addEventListener('change', sync); sync(); controls.append(name, price, action);
-  const status = document.createElement('span'); status.className = 'c6b-field-status'; status.textContent = '服务行';
-  row.append(label, controls, status); return row;
+  const sync = () => {
+    row.dataset.action = action.value;
+    name.disabled = price.disabled = state.busy || ['blank','remove'].includes(action.value);
+    markFieldDirty();
+  };
+  action.addEventListener('change', sync);
+  name.addEventListener('input', markFieldDirty);
+  price.addEventListener('input', markFieldDirty);
+  name.disabled = price.disabled = ['blank','remove'].includes(action.value);
+  controls.append(name, price, action, makeEvidence(nameField || {}));
+  row.append(label, controls);
+  return row;
 }
 function renderReview() {
   if (!state.review) return;
-  els.progress.hidden = false; els.error.hidden = true; els.reviewPanel.hidden = false; els.status.textContent = '等待审阅'; setStage('review');
+  state.dirty = false;
+  state.acceptedFieldIds = new Set();
+  els.progress.hidden = false;
+  els.error.hidden = true;
+  els.reviewPanel.hidden = false;
+  els.status.textContent = '等待审阅';
+  setStage('review');
   els.fieldCount.textContent = `${state.review.fields.length} 个字段`;
   els.unresolvedCount.textContent = `${state.review.unresolved_count} 个待确认`;
+  els.dirtyBadge.textContent = '已保存';
+  els.dirtyBadge.classList.remove('dirty');
   renderConflicts(state.review.conflicts || []);
   const groups = new Map();
-  state.review.fields.forEach(field => { const group = fieldGroup(field); if (!groups.has(group)) groups.set(group, []); groups.get(group).push(field); });
+  state.review.fields.forEach(field => {
+    const group = fieldGroup(field);
+    if (!groups.has(group)) groups.set(group, []);
+    groups.get(group).push(field);
+  });
   els.reviewGroups.innerHTML = '';
   groups.forEach((fields, name) => {
     const section = document.createElement('section'); section.className = 'c6b-field-group';
     const heading = document.createElement('h3'); heading.textContent = name; section.appendChild(heading);
     if (name === '服务与价格') {
-      const rows = new Map(); fields.forEach(field => { if (!rows.has(field.group_index)) rows.set(field.group_index, []); rows.get(field.group_index).push(field); });
+      const rows = new Map();
+      fields.forEach(field => {
+        if (!rows.has(field.group_index)) rows.set(field.group_index, []);
+        rows.get(field.group_index).push(field);
+      });
       rows.forEach((values, index) => section.appendChild(makeServiceRow(index, values)));
-    } else fields.forEach(field => section.appendChild(makeScalarField(field)));
+    } else {
+      fields.forEach(field => section.appendChild(makeScalarField(field)));
+    }
     els.reviewGroups.appendChild(section);
   });
+  applyReviewFilter('pending');
+  syncReviewControls();
 }
 function renderConflicts(conflicts) {
   els.conflictList.innerHTML = '';
-  els.conflictPanel.hidden = conflicts.length === 0;
   conflicts.forEach(conflict => {
     const row = document.createElement('label'); row.className = 'c6b-conflict-row'; row.dataset.conflictId = conflict.conflict_id;
     const title = document.createElement('strong'); title.textContent = conflict.semantic_key || '资料冲突';
     const select = document.createElement('select'); select.dataset.role = 'conflict';
     const placeholder = document.createElement('option'); placeholder.value = ''; placeholder.textContent = '请选择经核对的值'; select.appendChild(placeholder);
-    (conflict.candidates || []).forEach(candidate => { const option = document.createElement('option'); option.value = candidate.value; option.textContent = candidate.value; option.selected = conflict.resolved_value === candidate.value; select.appendChild(option); });
+    (conflict.candidates || []).forEach(candidate => {
+      const option = document.createElement('option'); option.value = candidate.value; option.textContent = candidate.value; option.selected = conflict.resolved_value === candidate.value; select.appendChild(option);
+    });
+    select.addEventListener('change', markFieldDirty);
     row.append(title, select); els.conflictList.appendChild(row);
   });
 }
+function rowMatchesFilter(row, filter) {
+  if (filter === 'all') return true;
+  if (filter === 'pending') return row.dataset.status === 'NEEDS_CONFIRMATION';
+  if (filter === 'filled') return ['FILLED', 'USER_CONFIRMED'].includes(row.dataset.status);
+  if (filter === 'signature') return String(row.dataset.kind).startsWith('signature');
+  return false;
+}
+function applyReviewFilter(filter) {
+  state.activeFilter = filter;
+  els.reviewFilters.querySelectorAll('[data-filter]').forEach(button => {
+    button.setAttribute('aria-pressed', String(button.dataset.filter === filter));
+  });
+  let visibleRows = 0;
+  els.reviewGroups.querySelectorAll('.c6b-field-group').forEach(group => {
+    let groupRows = 0;
+    group.querySelectorAll('.c6b-field-row').forEach(row => {
+      const visible = filter !== 'conflicts' && rowMatchesFilter(row, filter);
+      row.hidden = !visible;
+      if (visible) groupRows += 1;
+    });
+    group.hidden = groupRows === 0;
+    visibleRows += groupRows;
+  });
+  const showConflicts = (state.review?.conflicts || []).length > 0
+    && ['pending', 'conflicts', 'all'].includes(filter);
+  els.conflictPanel.hidden = !showConflicts;
+  els.filterEmpty.hidden = visibleRows > 0 || showConflicts;
+}
 function collectReview() {
-  const field_updates = [...els.reviewGroups.querySelectorAll('[data-field-id]')].filter(row => !row.querySelector('textarea').disabled).map(row => ({
-    field_id: row.dataset.fieldId, value: row.querySelector('textarea').value.trim(),
-  }));
+  const field_updates = [...els.reviewGroups.querySelectorAll('[data-field-id]')]
+    .filter(row => row.querySelector('textarea').dataset.locked !== 'true')
+    .map(row => ({
+      field_id: row.dataset.fieldId,
+      value: row.querySelector('textarea').value.trim(),
+    }));
   const service_rows = [...els.reviewGroups.querySelectorAll('[data-group-index]')].map(row => ({
-    group_index: Number(row.dataset.groupIndex), action: row.dataset.action,
-    name: row.querySelector('[data-role="name"]').value.trim(), price: row.querySelector('[data-role="price"]').value.trim(),
+    group_index: Number(row.dataset.groupIndex),
+    action: row.dataset.action,
+    name: row.querySelector('[data-role="name"]').value.trim(),
+    price: row.querySelector('[data-role="price"]').value.trim(),
   }));
-  const conflict_resolutions = [...els.conflictList.querySelectorAll('[data-conflict-id]')].filter(row => row.querySelector('select').value).map(row => ({
-    conflict_id: row.dataset.conflictId, value: row.querySelector('select').value,
-  }));
-  return { version: state.review.version, field_updates, service_rows, conflict_resolutions };
+  const conflict_resolutions = [...els.conflictList.querySelectorAll('[data-conflict-id]')]
+    .filter(row => row.querySelector('select').value)
+    .map(row => ({
+      conflict_id: row.dataset.conflictId,
+      value: row.querySelector('select').value,
+    }));
+  return {
+    version: state.review.version,
+    field_updates,
+    accepted_field_ids: [...state.acceptedFieldIds],
+    service_rows,
+    conflict_resolutions,
+  };
 }
 async function saveReview() {
   if (!state.review || state.busy) return false;
+  if (!state.dirty) return createPreview();
+  const payload = collectReview();
   setBusy(true);
   try {
-    state.review = await requestJson(`/case6b/session/${encodeURIComponent(state.sessionId)}/review`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(collectReview()),
-    });
-    renderReview(); toast('字段修订已保存'); return true;
-  } catch (error) { showError(error.message); return false; } finally { setBusy(false); }
+    state.review = await requestJson(
+      `/case6b/session/${encodeURIComponent(state.sessionId)}/review`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      },
+    );
+    renderReview();
+    await createPreview({ manageBusy: false });
+    toast('字段已保存，文档预览已刷新');
+    return true;
+  } catch (error) {
+    if (error.code === 'STALE_REVIEW') {
+      state.review = await requestJson(
+        `/case6b/session/${encodeURIComponent(state.sessionId)}/review`,
+      );
+      renderReview();
+      toast('审阅版本已更新，请重新检查字段');
+    } else {
+      showError(error.message);
+    }
+    return false;
+  } finally {
+    setBusy(false);
+  }
 }
 async function finalizeDraft() {
   if (!state.review || state.busy) return;
-  if (!await saveReview()) return;
-  if (state.review.unresolved_conflict_count > 0) {
-    showError(`仍有 ${state.review.unresolved_conflict_count} 项材料冲突待解决，无法生成草案。`);
+  if (state.dirty) {
+    toast('请先保存字段并刷新预览');
     return;
   }
-  const allow = state.review.unresolved_count === 0 || window.confirm(`仍有 ${state.review.unresolved_count} 个必填字段待确认。继续生成时会以黄色标记写入草案，是否继续？`);
+  if (state.review.unresolved_conflict_count > 0) {
+    showError(`仍有 ${state.review.unresolved_conflict_count} 项材料冲突待解决，无法生成正式文档。`);
+    return;
+  }
+  const allow = state.review.unresolved_count === 0 || window.confirm(
+    `仍有 ${state.review.unresolved_count} 个必填字段待确认。继续生成时会以黄色标记写入正式文档，是否继续？`,
+  );
   if (!allow) return;
-  setBusy(true); setStage('generate'); els.status.textContent = '正在生成'; els.progress.hidden = false; els.progressMessage.textContent = '正在保留原模板版式并生成 DOCX / PDF...';
+  setBusy(true);
+  setStage('generate');
+  els.status.textContent = '正在生成';
+  els.progress.hidden = false;
+  els.progressMessage.textContent = '正在保留原模板版式并生成正式 DOCX / PDF...';
   try {
-    const result = await requestJson(`/case6b/session/${encodeURIComponent(state.sessionId)}/finalize`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ version: state.review.version, allow_unresolved: true }),
-    });
-    els.downloadPanel.hidden = false; els.downloadDocx.disabled = !result.docx_ready; els.downloadPdf.disabled = !result.pdf_ready;
-    els.downloadMessage.textContent = result.pdf_error ? `${result.pdf_error}；DOCX 仍可下载。` : 'DOCX 与 PDF 均已准备完成，请在正式使用前人工复核。';
-    els.status.textContent = '已生成'; els.progress.hidden = true; updateHistory({ title: currentHistory()?.title || '服务协议草案', sessionId: state.sessionId });
-  } catch (error) { showError(error.message); } finally { setBusy(false); }
+    const result = await requestJson(
+      `/case6b/session/${encodeURIComponent(state.sessionId)}/finalize`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          version: state.review.version,
+          allow_unresolved: true,
+        }),
+      },
+    );
+    els.downloadPanel.hidden = false;
+    els.downloadDocx.disabled = !result.docx_ready;
+    els.downloadPdf.disabled = !result.pdf_ready;
+    els.downloadMessage.textContent = result.pdf_error
+      ? `${result.pdf_error}；DOCX 仍可下载。`
+      : 'DOCX 与 PDF 均已准备完成，请在正式使用前人工复核。';
+    els.status.textContent = '已生成';
+    els.progress.hidden = true;
+    updateHistory({ title: currentHistory()?.title || '服务协议草案', sessionId: state.sessionId });
+  } catch (error) {
+    showError(error.message);
+  } finally {
+    setBusy(false);
+  }
 }
 async function download(format) {
   if (!state.sessionId) return;
@@ -491,11 +794,16 @@ async function resetCurrent(confirmFirst = true) {
 }
 function clearView(updateCurrent) {
   state.template = null; state.materials = []; state.sessionId = null; state.review = null; state.templatePreflight = null;
+  state.dirty = false; state.acceptedFieldIds = new Set(); state.previewReady = false; state.activeFilter = 'pending';
   els.templateInput.value = ''; els.materialsInput.value = ''; els.templateState.textContent = '未选择'; els.materialsState.textContent = '未选择';
   els.templateActions.hidden = true;
   els.selectedFiles.innerHTML = ''; els.materialStatus.innerHTML = ''; els.idle.hidden = false; els.progress.hidden = true; els.error.hidden = true;
   els.reviewPanel.hidden = true; els.downloadPanel.hidden = true; els.retry.hidden = true; els.status.textContent = '等待文件'; setStage('upload'); updateStartButton();
   els.templatePreflight.hidden = true; els.conflictPanel.hidden = true;
+  els.previewFrame.hidden = true; els.previewFrame.removeAttribute('src');
+  els.previewFallback.hidden = false; els.previewStatus.textContent = '等待生成';
+  els.previewStatus.className = 'c6b-preview-state';
+  setReviewView('preview');
   if (updateCurrent && currentHistory()) updateHistory({ title: '新建草案', sessionId: null, expired: false });
   syncUploadControls();
 }
@@ -508,6 +816,14 @@ els.removeTemplate.addEventListener('click', removeTemplate);
 els.replaceTemplate.addEventListener('click', () => els.templateInput.click());
 els.start.addEventListener('click', startWorkflow); els.retry.addEventListener('click', () => retryFailed());
 els.saveReview.addEventListener('click', saveReview); els.finalize.addEventListener('click', finalizeDraft);
+els.reviewFilters.addEventListener('click', event => {
+  const button = event.target.closest('[data-filter]');
+  if (button) applyReviewFilter(button.dataset.filter);
+});
+els.reviewTabs.addEventListener('click', event => {
+  const button = event.target.closest('[data-review-view]');
+  if (button) setReviewView(button.dataset.reviewView);
+});
 els.downloadDocx.addEventListener('click', () => download('docx')); els.downloadPdf.addEventListener('click', () => download('pdf'));
 els.reset.addEventListener('click', () => resetCurrent(true)); els.newTask.addEventListener('click', newTask);
 els.sidebarToggle.addEventListener('click', () => { els.sidebar.classList.add('open'); els.sidebarOverlay.classList.add('open'); });
