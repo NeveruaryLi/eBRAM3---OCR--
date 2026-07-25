@@ -33,7 +33,8 @@ def get_handler(case_type: str) -> CaseHandler:
     工厂函数：根据 case_type 字符串返回对应 CaseHandler 实例。
 
     Args:
-        case_type: 与 session_metadata["case_type"] 一致，如 "case1"、"case2"、"case4"、"case5"。
+        case_type: 与 session_metadata["case_type"] 一致，如
+                   "case1"、"case2"、"case4"、"case5"、"case6b"。
 
     Returns:
         对应 CaseHandler 的实例（无状态，每次调用新建）。
