@@ -543,7 +543,6 @@ function createInlineField(field, meta) {
   control.dataset.fieldId = field.field_id;
   control.dataset.original = meta.original_placeholder || '';
   control.dataset.status = field.status;
-  control.dataset.label = statusLabel(field.status);
   control.dataset.placeholder = field.status === 'LEAVE_BLANK' ? '签署时填写' : '待补充';
   control.setAttribute('role', 'textbox');
   control.setAttribute('aria-label', `${field.label || field.field_id}：${statusLabel(field.status)}`);
@@ -844,7 +843,7 @@ function applySavedReview(review, preserveLocal) {
     const field = reviewField(control.dataset.fieldId); if (!field) return;
     control.className = `c6b-inline-field ${statusClass(field)}`;
     if (state.documentMode === 'original') control.classList.add('original-placeholder');
-    control.dataset.status = field.status; control.dataset.label = statusLabel(field.status);
+    control.dataset.status = field.status;
     if (!preserveLocal && state.documentMode === 'draft') control.textContent = field.value || '';
   });
   renderConflicts(review.conflicts || []);
