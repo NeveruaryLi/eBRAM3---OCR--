@@ -1,6 +1,6 @@
 # eBRAM AI 文档助手 — 项目交接文档
 
-> 发布基线：`case6a-case6b-v1.0`；更新日期：2026-07-25；已实现：Case 1、2、4、5、6A、6B；未实现：Case 3A / 3B。
+> 已发布基线：`case6a-case6b-v1.0`；当前候选：Case 6B V1.1；更新日期：2026-07-25；已实现：Case 1、2、4、5、6A、6B；未实现：Case 3A / 3B。
 
 本文以实际代码为第一事实来源，记录当前系统架构、各 Use Case 的完整数据流、GPTBots Agent 分工、接口、会话状态、限制和后续开发约束。
 
@@ -358,7 +358,7 @@ Agent I 生成配置和 Prompt 位于 `GPTbots_.bot/generated/`。测试模式�
 
 **Agent**：A、L。
 
-**Agent L 测试模式**：`v1.0.9`。
+**Agent L 测试模式**：当前已发布 `v1.0.9`；文件名无关的附件识别 Prompt 已导入为 `v1.0.11` 草稿，但尚未发布。
 
 #### 上传
 
@@ -521,6 +521,12 @@ Case 6B 不支持结果追问。
 | POST | `/case6b/session/{session_id}/finalize` |
 | DELETE | `/case6b/session/{session_id}` |
 
+关键接口契约：
+
+- `/cancel` 请求体为 `{"run_id":"..."}`，其中 `run_id` 来自本轮 SSE `analysis_start` 事件。运行中取消返回 `202 cancelling`，已经取消返回 `200 cancelled`，错误或过期 run 返回 `409 STALE_ANALYSIS_RUN`。
+- `/document-view` 返回当前 `review_version`、`manifest_hash`、`shell_url`，以及每个字段的 `field_id`、唯一 marker、原占位符和字段类型。
+- `/document-shell` 必须携带当前 64 位 `manifest_hash`，以内嵌 DOCX 返回只读编辑 shell；旧 hash 返回 `409 STALE_DOCUMENT_VIEW`，过期 Session 返回 `410 SESSION_EXPIRED`。
+
 ## 7. 前端与交互
 
 设计基线：
@@ -575,7 +581,7 @@ node --check static\case6b.js
 外部验收记录：
 
 - Agent K 测试模式 `v1.0.5`：2026-07-23 完成问题集、多轮、繁体中文和隔离验收。
-- Agent L 测试模式 `v1.0.9`：2026-07-24 完成 37/37 模板字段和 37/37 填充结果双阶段 POC。
+- Agent L 测试模式 `v1.0.9`：2026-07-24 完成 37/37 模板字段和 37/37 填充结果双阶段 POC。文件名无关的附件识别 Prompt 于 2026-07-25 导入为 `v1.0.11` 草稿，尚未发布。
 
 这些记录不等同于生产 SLA。PaddleOCR、GPTBots、HKLII、LibreOffice 和 Word 都是外部或本机依赖。
 
@@ -590,7 +596,8 @@ node --check static\case6b.js
 7. **Case 4 模型质量**：译图可能出现字体、布局或识别偏差，必须人工复核。
 8. **Case 6A 内容时效**：知识库是官网快照，需定期按 Sitemap 和来源清单增量更新。
 9. **Case 6B Word 范围**：仅支持普通段落和表格中的下划线/方括号占位符，不支持复杂 Word 对象。
-10. **自动化范围**：现有测试以契约和单元测试为主，尚缺统一 CI、覆盖率阈值和全站视觉回归。
+10. **Case 6B 取消边界**：中断只能阻止结果继续写回应用 Session；已经提交给 PaddleOCR 或 GPTBots 的外部请求可能仍会在平台侧完成并产生调用。
+11. **自动化范围**：现有测试以契约和单元测试为主，尚缺统一 CI、覆盖率阈值和全站视觉回归。
 
 ## 10. 后续开发规则
 

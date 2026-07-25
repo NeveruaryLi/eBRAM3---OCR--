@@ -2,7 +2,7 @@
 
 eBRAM3 是一个面向法律及争议解决场景的 AI 工作台。系统以 FastAPI 单体服务为核心，将 PaddleOCR、GPTBots Agents、网页检索和文档格式化组合为独立 Use Case。
 
-当前发布候选为 `case6a-case6b-v1.0`（2026-07-25），包含 Case 1、2、4、5、6A、6B。Case 3A / 3B 尚未开发。
+当前已发布标签为 `case6a-case6b-v1.0`（2026-07-25）。当前代码是在该标签基础上的 Case 6B V1.1 发布候选，包含 Case 1、2、4、5、6A、6B；Case 3A / 3B 尚未开发。
 
 ## 功能状态
 
@@ -14,7 +14,7 @@ eBRAM3 是一个面向法律及争议解决场景的 AI 工作台。系统以 Fa
 | Case 4 | 已实现 | 单份 PDF → PyMuPDF 拆页 → Agent I 图片翻译 → 按原页尺寸合并 | 英文与繁体中文双向译文 PDF；不支持追问 |
 | Case 5 | 已实现 | 关键词 → Playwright 检索 HKLII → Agent J 摘要 | HKLII 案例摘要；DOCX/PDF；支持追问 |
 | Case 6A | 已实现 | 用户问题 → Agent K + eBRAM 官网 RAG 知识库 | 双语服务指导回答与官方来源链接 |
-| Case 6B | 已实现 | DOCX 模板 + 事实材料 → Agent A 摘要 → Agent L 双阶段 → 预填预览与人工审阅 | 服务协议草案；DOCX/PDF；不支持追问 |
+| Case 6B | 已实现 | DOCX 模板 + 事实材料 → Agent A 摘要 → Agent L 双阶段 → Word 风格原位编辑、自动保存与人工审阅 | 服务协议草案；DOCX/PDF；不支持追问 |
 
 ## 系统架构
 
@@ -137,6 +137,8 @@ GPTBots 会把通过 base64 发送的附件重命名为时间戳文件名，即�
 
 关键数据全部放在 Markdown 附件中，不依赖短期记忆。Agent L 完成后，系统生成只用于浏览器展示的 Word 风格草案：固定法律条款只读，已识别空位在原位置可编辑，用户可切换原模板、查看差异、证据和冲突。编辑停止约 800 毫秒后自动保存；处理中可中断并保留浏览器已选择的文件，修改后从头重跑。未解决冲突阻止生成，普通待确认字段经风险确认后以黄色标记保留，签名和签署日期保持空白。最终文件始终从原始模板按稳定 locator 回填，分别生成 DOCX 和 PDF。
 
+Agent L 当前已发布的测试模式版本是 `v1.0.9`。文件名无关的附件识别 Prompt 已于 2026-07-25 导入为 `v1.0.11` 草稿，但尚未发布；生成版 `.bot` 与草稿状态均保留在仓库中，不能把该草稿视为线上已生效配置。
+
 详细限制和审阅契约见 [项目交接文档](docs/HANDOVER.md) 与 [Agent L overview](GPTbots_.bot/generated/case6b/overview.md)。
 
 ## 主要接口
@@ -189,7 +191,7 @@ node --check static\case6a.js
 node --check static\case6b.js
 ```
 
-当前基线包含 105 项 Python 测试。外部 GPTBots、PaddleOCR、HKLII、LibreOffice 和 Word 仍需在目标环境进行集成验证。
+当前基线包含 108 项 Python 测试。外部 GPTBots、PaddleOCR、HKLII、LibreOffice 和 Word 仍需在目标环境进行集成验证。
 
 ## 已知限制与安全
 
