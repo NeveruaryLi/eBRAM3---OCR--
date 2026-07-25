@@ -1,6 +1,6 @@
 # eBRAM AI 文档助手 — 项目交接文档
 
-> 发布基线：`case6a-case6b-v1.0`；更新日期：2026-07-25；已实现：Case 1、2、4、5、6A、6B；未实现：Case 3A / 3B。
+> 已发布基线：`case6a-case6b-v1.0`；当前候选：Case 6B V1.1；更新日期：2026-07-25；已实现：Case 1、2、4、5、6A、6B；未实现：Case 3A / 3B。
 
 本文以实际代码为第一事实来源，记录当前系统架构、各 Use Case 的完整数据流、GPTBots Agent 分工、接口、会话状态、限制和后续开发约束。
 
@@ -85,7 +85,7 @@ api/
   case4_routes.py         Case 4 单 PDF 上传
   case5_routes.py         Case 5 HKLII 搜索与抓取 SSE
   case6a_routes.py        Case 6A 私有会话映射和文本问答
-  case6b_routes.py        Case 6B 上传、重试、审阅和 finalize
+  case6b_routes.py        Case 6B 上传、重试、中断、Word 文档视图、审阅和 finalize
 cases/
   base.py                 CaseHandler + SseEvent 契约
   __init__.py             Registry / Factory
@@ -358,7 +358,7 @@ Agent I 生成配置和 Prompt 位于 `GPTbots_.bot/generated/`。测试模式�
 
 **Agent**：A、L。
 
-**Agent L 测试模式**：`v1.0.9`。
+**Agent L 测试模式**：当前已发布 `v1.0.9`；文件名无关的附件识别 Prompt 已导入为 `v1.0.11` 草稿，但尚未发布。
 
 #### 上传
 
@@ -421,6 +421,11 @@ FlowAgent 路由条件为 `sys_user_msg_count < 1`。GPTBots 在处理当前消�
 1. 一段短文本，说明附件包含第一轮字段清单与材料证据，并要求只返回填充 JSON。
 2. `case6b_field_fill_context.md`，包含阶段标记、完整 `field_list`、`full_summary`、冲突、原始值和规范化值。
 
+上述 Markdown 文件名是应用侧逻辑名称。GPTBots 当前会把 base64 附件在会话记录中重命名为
+时间戳名称，即使请求已传入官方 `name` 字段。运行契约因此同时使用附件顺序、文件格式、
+`CASE6B_PHASE`、`document_role` 和 Markdown 内部 Document identity 块，不以控制台显示名称
+作为路由或内容识别条件。
+
 关键数据完全包含在 Markdown 附件中。短期记忆只辅助上下文，不作为唯一状态来源。
 
 Agent L 必须：
@@ -440,14 +445,18 @@ Agent L 必须：
 分析完成后返回 `result_key="协议草案"`，但 finalize 前不可下载。
 
 - Review 带版本号，PATCH 旧版本返回冲突，防止覆盖新状态。
-- 用户可修改所有非签名字段。
-- 人工修改标记为 `USER_CONFIRMED`，保留 Agent 原值和审计信息。
+- 用户可修改所有非签名字段，也可通过 `accepted_field_ids` 在不改变文本时接受 Agent 建议。
+- 人工修改或接受建议标记为 `USER_CONFIRMED`，保留 Agent 原值和审计信息。
 - 未解决事实冲突阻止 finalize。
 - 普通 `NEEDS_CONFIRMATION` 字段允许在二次确认风险后生成，并用黄色 `[TO BE CONFIRMED]` 或 `[待確認]` 标记。
 - 服务名称与价格必须成对保留、留空或删除。
-- 修改 Review 后旧生成文件失效。
+- 修改 Review 后旧生成文件立即失效。
+- 后端生成带唯一字段标记的只读 DOCX shell；浏览器通过本地固定版本 `docx-preview` 与 JSZip 渲染近似 Word 页面，并只把识别出的标记替换为输入控件。
+- “预填草案 / 查看原模板”在同一文档位置切换；差异高亮、待补导航和证据抽屉不改变最终 DOCX。
+- 字段停止输入约 800 毫秒或失焦后自动串行 PATCH；保存失败保留浏览器值，版本冲突暂停自动保存。
+- 处理中可按 `analysis_run_id` 幂等取消；取消后迟到的 OCR/Agent 结果不得写回，浏览器保留已选择文件供删除、更换并完整重跑。
 
-文档生成在原模板内存副本上按 locator 替换，不重建整个模板。未使用服务行从 OOXML 完整删除；固定条款、字体、表格、页边距、页眉页脚和签署区尽量保留。
+文档生成在原模板内存副本上按 locator 替换，不重建整个模板。浏览器里的 HTML/输入控件不参与 DOCX 反向生成。未使用服务行从 OOXML 完整删除；固定条款、字体、表格、页边距、页眉页脚和签署区尽量保留。
 
 输出：
 
@@ -506,8 +515,17 @@ Case 6B 不支持结果追问。
 | POST | `/case6b/session/{session_id}/retry` |
 | GET | `/case6b/session/{session_id}/review` |
 | PATCH | `/case6b/session/{session_id}/review` |
+| POST | `/case6b/session/{session_id}/cancel` |
+| GET | `/case6b/session/{session_id}/document-view` |
+| GET | `/case6b/session/{session_id}/document-shell?manifest_hash={hash}` |
 | POST | `/case6b/session/{session_id}/finalize` |
 | DELETE | `/case6b/session/{session_id}` |
+
+关键接口契约：
+
+- `/cancel` 请求体为 `{"run_id":"..."}`，其中 `run_id` 来自本轮 SSE `analysis_start` 事件。运行中取消返回 `202 cancelling`，已经取消返回 `200 cancelled`，错误或过期 run 返回 `409 STALE_ANALYSIS_RUN`。
+- `/document-view` 返回当前 `review_version`、`manifest_hash`、`shell_url`，以及每个字段的 `field_id`、唯一 marker、原占位符和字段类型。
+- `/document-shell` 必须携带当前 64 位 `manifest_hash`，以内嵌 DOCX 返回只读编辑 shell；旧 hash 返回 `409 STALE_DOCUMENT_VIEW`，过期 Session 返回 `410 SESSION_EXPIRED`。
 
 ## 7. 前端与交互
 
@@ -563,7 +581,7 @@ node --check static\case6b.js
 外部验收记录：
 
 - Agent K 测试模式 `v1.0.5`：2026-07-23 完成问题集、多轮、繁体中文和隔离验收。
-- Agent L 测试模式 `v1.0.9`：2026-07-24 完成 37/37 模板字段和 37/37 填充结果双阶段 POC。
+- Agent L 测试模式 `v1.0.9`：2026-07-24 完成 37/37 模板字段和 37/37 填充结果双阶段 POC。文件名无关的附件识别 Prompt 于 2026-07-25 导入为 `v1.0.11` 草稿，尚未发布。
 
 这些记录不等同于生产 SLA。PaddleOCR、GPTBots、HKLII、LibreOffice 和 Word 都是外部或本机依赖。
 
@@ -577,8 +595,9 @@ node --check static\case6b.js
 6. **报告转换**：DOCX 转 PDF 依赖 LibreOffice 或 Microsoft Word。
 7. **Case 4 模型质量**：译图可能出现字体、布局或识别偏差，必须人工复核。
 8. **Case 6A 内容时效**：知识库是官网快照，需定期按 Sitemap 和来源清单增量更新。
-9. **Case 6B Word 范围**：仅支持普通段落和表格中的下划线/方括号占位符，不支持复杂 Word 对象。
-10. **自动化范围**：现有测试以契约和单元测试为主，尚缺统一 CI、覆盖率阈值和全站视觉回归。
+9. **Case 6B Word 范围**：仅支持普通段落和表格中的下划线/方括号占位符，不支持复杂 Word 对象。浏览器预览会拒绝 `altChunk`、危险外部资源和异常样式标识；当前采用 Demo 的必要安全边界，正式环境仍应只接收可信来源的模板。
+10. **Case 6B 取消边界**：中断只能阻止结果继续写回应用 Session；已经提交给 PaddleOCR 或 GPTBots 的外部请求可能仍会在平台侧完成并产生调用。
+11. **自动化范围**：现有测试以契约和单元测试为主，尚缺统一 CI、覆盖率阈值和全站视觉回归。
 
 ## 10. 后续开发规则
 

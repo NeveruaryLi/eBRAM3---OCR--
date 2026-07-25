@@ -6,11 +6,34 @@ const state = {
   template: null,
   materials: [],
   sessionId: null,
+  reviewContextToken: 0,
   templatePreflight: null,
   review: null,
   busy: false,
   history: [],
   currentLocalId: null,
+  dirty: false,
+  acceptedFieldIds: new Set(),
+  dirtyFieldIds: new Set(),
+  draftValues: new Map(),
+  serviceActions: new Map(),
+  editGeneration: 0,
+  saveTimer: null,
+  saveInFlight: false,
+  saveQueued: false,
+  savePaused: false,
+  analysisRunId: null,
+  analysisController: null,
+  analysisRunToken: null,
+  analysisCompletion: null,
+  processing: false,
+  cancelRequested: false,
+  cancelRunToken: null,
+  documentView: null,
+  documentMode: 'draft',
+  activeFieldId: null,
+  pendingIndex: 0,
+  fallbackMode: false,
 };
 
 const $ = id => document.getElementById(id);
@@ -23,7 +46,7 @@ const els = {
   materialStatus: $('materialStatus'), retry: $('retryBtn'), error: $('errorState'),
   errorMessage: $('errorMessage'), status: $('statusPill'), reviewPanel: $('reviewPanel'),
   reviewGroups: $('reviewGroups'), fieldCount: $('fieldCount'), unresolvedCount: $('unresolvedCount'),
-  saveReview: $('saveReviewBtn'), finalize: $('finalizeBtn'), downloadPanel: $('downloadPanel'),
+  finalize: $('finalizeBtn'), downloadPanel: $('downloadPanel'),
   downloadMessage: $('downloadMessage'), downloadDocx: $('downloadDocxBtn'),
   downloadPdf: $('downloadPdfBtn'), reset: $('resetTaskBtn'), newTask: $('newTaskBtn'),
   history: $('historyList'), sidebar: $('sidebar'), sidebarToggle: $('sidebarToggle'),
@@ -33,7 +56,15 @@ const els = {
   templatePreflightDetails: $('templatePreflightDetails'),
   templateActions: $('templateActions'), replaceTemplate: $('replaceTemplateBtn'),
   removeTemplate: $('removeTemplateBtn'), conflictPanel: $('conflictPanel'),
-  conflictList: $('conflictList'),
+  conflictList: $('conflictList'), cancelAnalysis: $('cancelAnalysisBtn'),
+  documentCanvas: $('documentCanvas'), documentLoading: $('documentLoading'),
+  documentMode: $('documentMode'), differenceToggle: $('differenceToggle'),
+  previousPending: $('previousPendingBtn'), nextPending: $('nextPendingBtn'),
+  pendingPosition: $('pendingPosition'), evidenceDrawer: $('evidenceDrawer'),
+  evidenceTitle: $('evidenceTitle'), evidenceBody: $('evidenceBody'),
+  evidenceClose: $('evidenceCloseBtn'), editorFallback: $('editorFallback'),
+  fallbackReason: $('fallbackReason'), retrySave: $('retrySaveBtn'),
+  dirtyBadge: $('dirtyBadge'),
 };
 
 function localId() { return `c6b_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`; }
@@ -52,12 +83,23 @@ function setStage(name) {
 }
 function setBusy(value) {
   state.busy = value;
-  [els.start, els.retry, els.saveReview, els.finalize, els.reset, els.newTask].forEach(button => {
+  [els.start, els.retry, els.reset, els.newTask].forEach(button => {
     if (button) button.disabled = value;
   });
+  if (els.cancelAnalysis) {
+    els.cancelAnalysis.disabled = !state.processing || !state.analysisRunId || state.cancelRequested;
+  }
   document.querySelectorAll('.c6b-retry-one').forEach(button => { button.disabled = value; });
   syncUploadControls();
+  syncReviewControls();
   updateStartButton();
+}
+function setProcessing(value) {
+  state.processing = value;
+  if (els.cancelAnalysis) {
+    els.cancelAnalysis.hidden = !value;
+    els.cancelAnalysis.disabled = !value || !state.analysisRunId || state.cancelRequested;
+  }
 }
 function syncUploadControls() {
   document.querySelectorAll('.c6b-file-remove').forEach(button => {
@@ -68,6 +110,15 @@ function syncUploadControls() {
   });
 }
 function updateStartButton() { els.start.disabled = state.busy || !state.template || state.materials.length < 1; }
+function captureReviewContext() {
+  return { sessionId: state.sessionId, token: state.reviewContextToken };
+}
+function isCurrentReviewContext(context) {
+  return Boolean(context.sessionId)
+    && state.sessionId === context.sessionId
+    && state.reviewContextToken === context.token;
+}
+function invalidateReviewContext() { state.reviewContextToken += 1; }
 
 function loadHistory() {
   try { state.history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { state.history = []; }
@@ -98,7 +149,7 @@ function renderHistory() {
     title.addEventListener('click', () => switchHistory(item));
     const menu = createHistoryMenu({
       label: title.textContent,
-      isDisabled: () => state.busy,
+      isDisabled: () => state.busy || state.saveInFlight,
       onDelete: () => deleteHistory(item.id),
     });
     node.append(title, menu);
@@ -107,7 +158,7 @@ function renderHistory() {
 }
 async function deleteHistory(id) {
   const item = state.history.find(entry => entry.id === id);
-  if (!item || state.busy) return;
+  if (!item || state.busy || state.saveInFlight) return;
   state.history = state.history.filter(entry => entry.id !== id);
   const wasCurrent = state.currentLocalId === id;
   if (wasCurrent) {
@@ -130,13 +181,35 @@ async function deleteHistory(id) {
     }
   }
 }
+async function saveBeforeNavigation() {
+  if (!state.review || (!state.dirty && !state.saveInFlight)) return true;
+  if (state.saveInFlight) {
+    toast('草案正在自动保存，请稍候再切换。');
+    return false;
+  }
+  const saved = await flushAutoSave();
+  if (!saved || state.dirty) {
+    toast('当前草案仍有未保存内容，请重试保存后再切换。');
+    return false;
+  }
+  return true;
+}
 async function switchHistory(item) {
   if (state.busy) return;
+  if (!(await saveBeforeNavigation())) return;
   clearView(false); state.currentLocalId = item.id; state.sessionId = item.sessionId || null; renderHistory();
   syncUploadControls();
   if (state.sessionId) {
-    try { state.review = await requestJson(`/case6b/session/${encodeURIComponent(state.sessionId)}/review`); renderReview(); }
-    catch (error) { item.expired = true; saveHistory(); showError(error.message); }
+    const reviewContext = captureReviewContext();
+    try {
+      const review = await requestJson(`/case6b/session/${encodeURIComponent(reviewContext.sessionId)}/review`);
+      if (!isCurrentReviewContext(reviewContext)) return;
+      state.review = review;
+      await renderReview(reviewContext);
+    } catch (error) {
+      if (!isCurrentReviewContext(reviewContext)) return;
+      item.expired = true; saveHistory(); showError(error.message);
+    }
   }
   closeSidebar();
 }
@@ -219,11 +292,17 @@ async function requestJson(url, options = {}) {
   const response = await fetch(url, options);
   if (!response.ok) {
     let message = `请求失败（HTTP ${response.status}）`;
+    let code = '';
     try {
-      const detail = (await response.json()).detail;
+      const payload = await response.json();
+      const detail = payload?.detail;
       message = typeof detail === 'string' ? detail : (detail && detail.message) || message;
+      code = typeof detail === 'object' ? detail.code || '' : '';
     } catch { /* response was not JSON */ }
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = response.status;
+    error.code = code;
+    throw error;
   }
   return response.status === 204 ? {} : response.json();
 }
@@ -274,7 +353,17 @@ function beginProgress() {
   els.idle.hidden = true; els.progress.hidden = false; els.error.hidden = true; els.reviewPanel.hidden = true; els.downloadPanel.hidden = true;
   els.status.textContent = '处理中'; setStage('extract');
 }
-function handleEvent(event) {
+function analysisCancellationRequested(runToken) {
+  return state.analysisRunToken === runToken
+    && state.cancelRequested
+    && state.cancelRunToken === runToken;
+}
+function handleEvent(event, runToken) {
+  if (state.analysisRunToken !== runToken) return;
+  if (event.run_id) {
+    state.analysisRunId = event.run_id;
+    if (els.cancelAnalysis) els.cancelAnalysis.disabled = analysisCancellationRequested(runToken);
+  }
   if (event.message) els.progressMessage.textContent = event.message;
   if (event.material_id) updateMaterialEvent(event);
   if (event.stage === 'material_summary') setStage('summary');
@@ -283,16 +372,51 @@ function handleEvent(event) {
   if (event.type === 'fatal_error') throw new Error(event.message || '处理失败');
 }
 async function runAnalysis(url, options) {
-  const response = await fetch(url, options); let fatal = '';
-  await readSse(response, event => {
-    try { handleEvent(event); } catch (error) { fatal = error.message; }
-  });
-  if (fatal) throw new Error(fatal);
+  const runToken = Symbol('case6b-analysis');
+  const controller = new AbortController();
+  let resolveCompletion;
+  const completion = new Promise(resolve => { resolveCompletion = resolve; });
+  const reviewContext = captureReviewContext();
+  state.analysisController = controller;
+  state.analysisRunToken = runToken;
+  state.analysisCompletion = completion;
+  state.cancelRequested = false;
+  state.cancelRunToken = null;
+  state.analysisRunId = null;
+  setProcessing(true);
+  const requestOptions = { ...options, signal: controller.signal };
+  let fatal = '';
   try {
-    state.review = await requestJson(`/case6b/session/${encodeURIComponent(state.sessionId)}/review`);
-    renderReview(); updateHistory({ title: state.template?.name || currentHistory()?.title || '服务协议草案', sessionId: state.sessionId });
+    const response = await fetch(url, requestOptions);
+    await readSse(response, event => {
+      try { handleEvent(event, runToken); } catch (error) { fatal = error.message; }
+    });
+    if (fatal) throw new Error(fatal);
+    if (analysisCancellationRequested(runToken) || !isCurrentReviewContext(reviewContext)) return;
+    const review = await requestJson(`/case6b/session/${encodeURIComponent(reviewContext.sessionId)}/review`);
+    if (analysisCancellationRequested(runToken) || !isCurrentReviewContext(reviewContext)) return;
+    state.review = review;
+    await renderReview(reviewContext);
+    if (analysisCancellationRequested(runToken) || !isCurrentReviewContext(reviewContext)) return;
+    updateHistory({ title: state.template?.name || currentHistory()?.title || '服务协议草案', sessionId: reviewContext.sessionId });
   } catch (error) {
-    els.retry.hidden = false; throw error;
+    if (
+      error.name === 'AbortError'
+      && (analysisCancellationRequested(runToken) || state.analysisRunToken !== runToken)
+    ) return;
+    if (state.analysisRunToken !== runToken) return;
+    els.retry.hidden = false;
+    throw error;
+  } finally {
+    if (state.analysisRunToken === runToken) {
+      state.analysisController = null;
+      state.analysisRunId = null;
+      state.analysisCompletion = null;
+      state.cancelRequested = false;
+      state.cancelRunToken = null;
+      setProcessing(false);
+    }
+    resolveCompletion();
   }
 }
 function renderTemplatePreflight(preflight) {
@@ -336,132 +460,608 @@ async function retryFailed(materialId = null) {
   try { await runAnalysis(`/case6b/session/${encodeURIComponent(state.sessionId)}/retry${query}`, { method: 'POST' }); }
   catch (error) { showError(error.message); } finally { setBusy(false); }
 }
+async function cancelAnalysis() {
+  if (
+    !state.sessionId
+    || !state.analysisRunId
+    || !state.analysisRunToken
+    || !state.analysisController
+    || !state.analysisCompletion
+    || state.cancelRequested
+  ) return;
+  const confirmed = window.confirm(
+    '中断后将废弃本轮 OCR、摘要和字段结果，但会保留本页已选择的文件供你删换。确定继续吗？',
+  );
+  if (!confirmed) return;
+  const controller = state.analysisController;
+  const runToken = state.analysisRunToken;
+  const completion = state.analysisCompletion;
+  const reviewContext = captureReviewContext();
+  state.cancelRequested = true;
+  state.cancelRunToken = runToken;
+  if (els.cancelAnalysis) {
+    els.cancelAnalysis.disabled = true;
+    els.cancelAnalysis.textContent = '正在中断…';
+  }
+  const abandonedSessionId = reviewContext.sessionId;
+  const runId = state.analysisRunId;
+  try {
+    await requestJson(
+      `/case6b/session/${encodeURIComponent(abandonedSessionId)}/cancel`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ run_id: runId }),
+      },
+    );
+  } catch (error) {
+    if (!isCurrentReviewContext(reviewContext) || state.analysisRunToken !== runToken) return;
+    if (error.code === 'STALE_ANALYSIS_RUN') {
+      toast('任务状态刚刚发生变化；本地仍会退出本轮处理。');
+    } else {
+      toast('已停止等待；服务端任务可能继续到缓存过期，但不会影响新任务。');
+    }
+  } finally {
+    controller.abort();
+    await completion;
+    if (!isCurrentReviewContext(reviewContext) || state.analysisRunToken !== runToken) return;
+    invalidateReviewContext();
+    state.sessionId = null;
+    state.analysisRunToken = null;
+    state.review = null;
+    state.documentView = null;
+    state.busy = false;
+    if (els.cancelAnalysis) {
+      els.cancelAnalysis.hidden = true;
+      els.cancelAnalysis.textContent = '中断并修改文件';
+    }
+    els.progress.hidden = true;
+    els.error.hidden = true;
+    els.reviewPanel.hidden = true;
+    els.downloadPanel.hidden = true;
+    els.retry.hidden = true;
+    els.idle.hidden = false;
+    els.status.textContent = '可修改文件';
+    els.templatePreflight.hidden = true;
+    setStage('upload');
+    renderSelectedFiles();
+    syncUploadControls();
+    updateStartButton();
+    updateHistory({ sessionId: null, expired: false });
+    toast('本轮处理已中断。你可以删除、更换或追加文件后重新开始。');
+  }
+}
 function showError(message) {
   els.error.hidden = false; els.errorMessage.textContent = message; els.status.textContent = '未完成';
 }
 
-function fieldGroup(field) {
-  const key = field.semantic_key || '';
-  if (field.group_key === 'services') return '服务与价格';
-  if (field.field_kind && field.field_kind.startsWith('signature')) return '签署区';
-  if (/provider|client|party|address/.test(key)) return '协议主体';
-  if (/amount|price|invoice|payment/.test(key)) return '费用与付款';
-  if (/date|term|notice|return/.test(key)) return '期限与终止';
-  return '其他条款';
+function syncReviewControls() {
+  if (!els.reviewPanel) return;
+  const locked = state.busy || state.saveInFlight || state.documentMode === 'original';
+  els.documentCanvas?.querySelectorAll('.c6b-inline-field').forEach(control => {
+    const field = reviewField(control.dataset.fieldId);
+    control.contentEditable = String(Boolean(field?.editable) && !locked);
+    control.setAttribute('aria-disabled', String(!field?.editable || locked));
+  });
+  els.reviewGroups?.querySelectorAll('textarea, input, select').forEach(control => {
+    control.disabled = state.busy || control.dataset.locked === 'true';
+  });
+  els.conflictList?.querySelectorAll('select').forEach(control => {
+    control.disabled = state.busy || state.saveInFlight;
+  });
+  if (els.finalize) {
+    els.finalize.disabled = state.busy || state.saveInFlight || state.dirty
+      || state.savePaused || (state.review?.unresolved_conflict_count || 0) > 0;
+  }
+  if (els.retrySave) els.retrySave.hidden = !state.savePaused;
+}
+function setSaveStatus(label, kind = '') {
+  if (!els.dirtyBadge) return;
+  els.dirtyBadge.textContent = label;
+  els.dirtyBadge.className = `c6b-save-state ${kind}`.trim();
+}
+function setReviewDirty(value = true) {
+  state.dirty = value;
+  if (value) {
+    state.editGeneration += 1;
+    setSaveStatus('自动保存 · 未保存', 'dirty');
+  } else {
+    setSaveStatus('自动保存 · 已保存', 'saved');
+  }
+  syncReviewControls();
+}
+function scheduleAutoSave(delay = 800) {
+  if (!state.review || state.savePaused) return;
+  clearTimeout(state.saveTimer);
+  state.saveTimer = setTimeout(() => { void flushAutoSave(); }, delay);
+}
+function reviewField(fieldId) {
+  return state.review?.fields?.find(field => field.field_id === fieldId) || null;
 }
 function statusLabel(status) {
-  return ({ FILLED: '证据已填', USER_CONFIRMED: '人工确认', NEEDS_CONFIRMATION: '待确认', REMOVE: '不使用', KEEP_BLANK: '保留空白', LEAVE_BLANK: '签署时填写' })[status] || status;
+  return ({ FILLED: '材料已填', USER_CONFIRMED: '人工确认', NEEDS_CONFIRMATION: '待补充', REMOVE: '不使用', KEEP_BLANK: '保留空白', LEAVE_BLANK: '签署时填写' })[status] || status;
 }
-function evidenceText(field) {
-  const evidence = Array.isArray(field.evidence) ? field.evidence : [];
-  return evidence.map(item => `${item.source || '来源'}：${item.fact || ''}`).join('；') || '暂无直接证据';
+function statusClass(field) {
+  if (field.status === 'USER_CONFIRMED') return 'user-confirmed';
+  if (field.status === 'NEEDS_CONFIRMATION') return 'needs-confirmation';
+  if (field.status === 'LEAVE_BLANK') return 'leave-blank';
+  if (field.status === 'FILLED') return 'material-filled';
+  return 'neutral';
 }
-function makeScalarField(field) {
-  const row = document.createElement('div'); row.className = 'c6b-field-row'; row.dataset.fieldId = field.field_id;
-  const label = document.createElement('div'); label.className = 'c6b-field-label';
-  const strong = document.createElement('strong'); strong.textContent = field.label || field.field_id;
-  const id = document.createElement('small'); id.textContent = field.field_id; label.append(strong, id);
-  const valueWrap = document.createElement('div');
-  const input = document.createElement('textarea'); input.className = 'c6b-field-input'; input.rows = 1; input.value = field.value || '';
-  input.disabled = !field.editable; input.dataset.kind = 'scalar';
-  const evidence = document.createElement('div'); evidence.className = 'c6b-field-evidence'; evidence.textContent = evidenceText(field);
-  valueWrap.append(input, evidence);
-  const status = document.createElement('span'); status.className = `c6b-field-status ${field.status === 'NEEDS_CONFIRMATION' ? 'pending' : ''} ${!field.editable ? 'locked' : ''}`; status.textContent = statusLabel(field.status);
-  status.dataset.sourceType = field.source_type || 'evidence';
-  if (field.source_type === 'template_default') status.textContent += ' · 模板默认值';
-  row.append(label, valueWrap, status); return row;
-}
-function makeServiceRow(groupIndex, fields) {
-  const nameField = fields.find(field => field.field_kind === 'repeatable_service');
-  const priceField = fields.find(field => field.field_kind === 'repeatable_price');
-  const row = document.createElement('div'); row.className = 'c6b-field-row'; row.dataset.groupIndex = groupIndex;
-  row.dataset.action = fields.every(field => field.status === 'REMOVE') ? 'remove' : (nameField?.service_action || (fields.every(field => field.status === 'KEEP_BLANK') ? 'blank' : 'included'));
-  const label = document.createElement('div'); label.className = 'c6b-field-label'; label.innerHTML = `<strong>服务 ${groupIndex}</strong><small>名称与价格成对处理</small>`;
-  const controls = document.createElement('div'); controls.className = 'c6b-service-controls';
-  const name = document.createElement('input'); name.className = 'c6b-field-input'; name.value = nameField?.value || ''; name.placeholder = '服务名称'; name.dataset.role = 'name';
-  const price = document.createElement('input'); price.className = 'c6b-field-input'; price.value = priceField?.value || ''; price.placeholder = '价格及计费单位'; price.dataset.role = 'price';
-  const action = document.createElement('select'); action.dataset.role = 'action';
-  [['included','正式服务'],['optional','可选服务'],['blank','保留空白'],['remove','移除']].forEach(([value, labelText]) => {
-    const option = document.createElement('option'); option.value = value; option.textContent = labelText; option.selected = value === row.dataset.action; action.appendChild(option);
+function initializeReviewState() {
+  state.draftValues = new Map();
+  state.serviceActions = new Map();
+  state.dirtyFieldIds = new Set();
+  state.acceptedFieldIds = new Set();
+  state.review.fields.forEach(field => {
+    state.draftValues.set(field.field_id, field.value || '');
+    if (field.group_index != null && field.service_action) {
+      state.serviceActions.set(Number(field.group_index), field.service_action);
+    }
   });
-  const sync = () => { row.dataset.action = action.value; name.disabled = price.disabled = ['blank','remove'].includes(action.value); };
-  action.addEventListener('change', sync); sync(); controls.append(name, price, action);
-  const status = document.createElement('span'); status.className = 'c6b-field-status'; status.textContent = '服务行';
-  row.append(label, controls, status); return row;
+  state.editGeneration = 0;
+  state.savePaused = false;
+  setReviewDirty(false);
 }
-function renderReview() {
-  if (!state.review) return;
-  els.progress.hidden = false; els.error.hidden = true; els.reviewPanel.hidden = false; els.status.textContent = '等待审阅'; setStage('review');
-  els.fieldCount.textContent = `${state.review.fields.length} 个字段`;
-  els.unresolvedCount.textContent = `${state.review.unresolved_count} 个待确认`;
-  renderConflicts(state.review.conflicts || []);
-  const groups = new Map();
-  state.review.fields.forEach(field => { const group = fieldGroup(field); if (!groups.has(group)) groups.set(group, []); groups.get(group).push(field); });
+function markFieldDirty(fieldId, value) {
+  state.draftValues.set(fieldId, value);
+  state.dirtyFieldIds.add(fieldId);
+  setReviewDirty(true);
+  updatePendingNavigation();
+  scheduleAutoSave();
+}
+function plainTextPaste(event) {
+  event.preventDefault();
+  const text = (event.clipboardData || window.clipboardData).getData('text/plain');
+  document.execCommand('insertText', false, text.replace(/[\r\n]+/g, ' '));
+}
+function createInlineField(field, meta) {
+  const control = document.createElement('span');
+  control.className = `c6b-inline-field ${statusClass(field)}`;
+  control.dataset.fieldId = field.field_id;
+  control.dataset.original = meta.original_placeholder || '';
+  control.dataset.status = field.status;
+  control.dataset.placeholder = field.status === 'LEAVE_BLANK' ? '签署时填写' : '待补充';
+  control.setAttribute('role', 'textbox');
+  control.setAttribute('aria-label', `${field.label || field.field_id}：${statusLabel(field.status)}`);
+  control.tabIndex = 0;
+  control.textContent = state.draftValues.get(field.field_id) || '';
+  control.contentEditable = String(Boolean(field.editable));
+  control.addEventListener('focus', () => openEvidence(field.field_id));
+  control.addEventListener('click', () => openEvidence(field.field_id));
+  control.addEventListener('input', () => {
+    if (state.documentMode !== 'draft' || !field.editable) return;
+    markFieldDirty(field.field_id, control.textContent.trim());
+  });
+  control.addEventListener('blur', () => {
+    if (state.dirty) scheduleAutoSave(0);
+  });
+  control.addEventListener('paste', plainTextPaste);
+  control.addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); control.blur(); }
+    if (event.key === 'Escape') control.blur();
+  });
+  return control;
+}
+function textNodes(container) {
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  return nodes;
+}
+function replaceMarker(container, marker, control) {
+  const nodes = textNodes(container);
+  const text = nodes.map(node => node.nodeValue || '').join('');
+  const start = text.indexOf(marker);
+  if (start < 0 || text.indexOf(marker, start + marker.length) >= 0) return false;
+  const end = start + marker.length;
+  let cursor = 0;
+  let startNode = null; let endNode = null; let startOffset = 0; let endOffset = 0;
+  for (const node of nodes) {
+    const next = cursor + (node.nodeValue || '').length;
+    if (!startNode && start >= cursor && start < next) {
+      startNode = node; startOffset = start - cursor;
+    }
+    if (endNode == null && end > cursor && end <= next) {
+      endNode = node; endOffset = end - cursor; break;
+    }
+    cursor = next;
+  }
+  if (!startNode || !endNode) return false;
+  if (startNode === endNode) {
+    const value = startNode.nodeValue || '';
+    const after = document.createTextNode(value.slice(endOffset));
+    startNode.nodeValue = value.slice(0, startOffset);
+    startNode.parentNode.insertBefore(control, startNode.nextSibling);
+    control.parentNode.insertBefore(after, control.nextSibling);
+    return true;
+  }
+  startNode.nodeValue = (startNode.nodeValue || '').slice(0, startOffset);
+  let clearing = false;
+  for (const node of nodes) {
+    if (node === startNode) { clearing = true; continue; }
+    if (!clearing) continue;
+    if (node === endNode) {
+      node.nodeValue = (node.nodeValue || '').slice(endOffset);
+      break;
+    }
+    node.nodeValue = '';
+  }
+  startNode.parentNode.insertBefore(control, startNode.nextSibling);
+  return true;
+}
+async function renderDocumentEditor(reviewContext) {
+  if (!isCurrentReviewContext(reviewContext) || !state.review) return false;
+  const review = state.review;
+  els.documentLoading.hidden = false;
+  if (!window.docx || typeof window.docx.renderAsync !== 'function') {
+    throw new Error('Word 文档渲染组件未能加载');
+  }
+  const documentView = await requestJson(
+    `/case6b/session/${encodeURIComponent(reviewContext.sessionId)}/document-view`,
+  );
+  if (!isCurrentReviewContext(reviewContext)) return false;
+  if (!String(documentView.shell_url || '').includes('/document-shell')) {
+    throw new Error('Word 草案地址无效');
+  }
+  const shellResponse = await fetch(documentView.shell_url, { cache: 'no-store' });
+  if (!isCurrentReviewContext(reviewContext)) return false;
+  if (!shellResponse.ok) throw new Error(`Word 草案读取失败（HTTP ${shellResponse.status}）`);
+  const shell = await shellResponse.blob();
+  if (!isCurrentReviewContext(reviewContext)) return false;
+  const renderHost = document.createElement('div');
+  await window.docx.renderAsync(shell, renderHost, renderHost, {
+    className: 'c6b-docx',
+    inWrapper: true,
+    ignoreWidth: false,
+    ignoreHeight: false,
+    ignoreFonts: false,
+    breakPages: true,
+    useBase64URL: true,
+    renderAltChunks: false,
+  });
+  if (!isCurrentReviewContext(reviewContext)) return false;
+  renderHost.querySelectorAll('a').forEach(link => {
+    link.removeAttribute('href'); link.removeAttribute('target');
+  });
+  const metadata = new Map(documentView.fields.map(field => [field.field_id, field]));
+  for (const field of review.fields) {
+    const meta = metadata.get(field.field_id);
+    if (!meta || !replaceMarker(renderHost, meta.marker, createInlineField(field, meta))) {
+      throw new Error(`字段 ${field.field_id} 无法稳定映射到 Word 草案`);
+    }
+  }
+  if (!isCurrentReviewContext(reviewContext)) return false;
+  state.documentView = documentView;
+  state.fallbackMode = false;
+  els.editorFallback.hidden = true;
+  els.documentCanvas.hidden = false;
+  els.documentCanvas.replaceChildren(...Array.from(renderHost.childNodes));
+  els.documentLoading.hidden = true;
+  applyDocumentMode('draft');
+  updatePendingNavigation();
+  return true;
+}
+function renderFallbackFields(reason) {
+  state.fallbackMode = true;
+  els.documentLoading.hidden = true;
+  els.documentCanvas.hidden = true;
+  els.editorFallback.hidden = false;
+  els.fallbackReason.textContent = `${reason}。请使用下方简化字段表单继续，最终 DOCX 仍从原模板生成。`;
   els.reviewGroups.innerHTML = '';
-  groups.forEach((fields, name) => {
-    const section = document.createElement('section'); section.className = 'c6b-field-group';
-    const heading = document.createElement('h3'); heading.textContent = name; section.appendChild(heading);
-    if (name === '服务与价格') {
-      const rows = new Map(); fields.forEach(field => { if (!rows.has(field.group_index)) rows.set(field.group_index, []); rows.get(field.group_index).push(field); });
-      rows.forEach((values, index) => section.appendChild(makeServiceRow(index, values)));
-    } else fields.forEach(field => section.appendChild(makeScalarField(field)));
-    els.reviewGroups.appendChild(section);
+  const serviceGroups = new Map();
+  state.review.fields.forEach(field => {
+    if (field.group_key === 'services') {
+      if (!serviceGroups.has(field.group_index)) serviceGroups.set(field.group_index, []);
+      serviceGroups.get(field.group_index).push(field);
+      return;
+    }
+    const row = document.createElement('label');
+    row.className = 'c6b-field-row'; row.dataset.fieldId = field.field_id;
+    const title = document.createElement('strong'); title.textContent = field.label || field.field_id;
+    const input = document.createElement('textarea');
+    input.className = 'c6b-field-input'; input.value = state.draftValues.get(field.field_id) || '';
+    input.dataset.locked = String(!field.editable); input.disabled = !field.editable;
+    input.placeholder = field.status === 'LEAVE_BLANK' ? '签署时填写' : '待补充';
+    input.addEventListener('input', () => markFieldDirty(field.field_id, input.value.trim()));
+    input.addEventListener('focus', () => openEvidence(field.field_id));
+    row.append(title, input); els.reviewGroups.appendChild(row);
   });
+  serviceGroups.forEach((fields, groupIndex) => {
+    const nameField = fields.find(field => field.field_kind === 'repeatable_service');
+    const priceField = fields.find(field => field.field_kind === 'repeatable_price');
+    const row = document.createElement('div'); row.className = 'c6b-field-row'; row.dataset.groupIndex = groupIndex;
+    const title = document.createElement('strong'); title.textContent = `服务 ${groupIndex}`;
+    const name = document.createElement('input'); name.className = 'c6b-field-input'; name.dataset.role = 'name'; name.value = state.draftValues.get(nameField.field_id) || '';
+    const price = document.createElement('input'); price.className = 'c6b-field-input'; price.dataset.role = 'price'; price.value = state.draftValues.get(priceField.field_id) || '';
+    const action = document.createElement('select'); action.dataset.role = 'action';
+    [['included','正式服务'],['optional','可选服务'],['blank','保留空白'],['remove','移除']].forEach(([value,label]) => {
+      const option = document.createElement('option'); option.value = value; option.textContent = label; action.appendChild(option);
+    });
+    action.value = state.serviceActions.get(Number(groupIndex)) || 'included';
+    const change = () => {
+      state.draftValues.set(nameField.field_id, name.value.trim());
+      state.draftValues.set(priceField.field_id, price.value.trim());
+      state.serviceActions.set(Number(groupIndex), action.value);
+      state.dirtyFieldIds.add(nameField.field_id); state.dirtyFieldIds.add(priceField.field_id);
+      setReviewDirty(true); scheduleAutoSave();
+    };
+    [name, price].forEach(input => input.addEventListener('input', change)); action.addEventListener('change', change);
+    row.append(title, name, price, action); els.reviewGroups.appendChild(row);
+  });
+}
+function applyDocumentMode(mode) {
+  state.documentMode = mode;
+  els.documentMode.querySelectorAll('[data-document-mode]').forEach(button => {
+    button.setAttribute('aria-selected', String(button.dataset.documentMode === mode));
+  });
+  els.documentCanvas.querySelectorAll('.c6b-inline-field').forEach(control => {
+    const field = reviewField(control.dataset.fieldId);
+    if (!field) return;
+    if (mode === 'original') {
+      control.textContent = control.dataset.original || '________';
+      control.contentEditable = 'false';
+      control.classList.add('original-placeholder');
+    } else {
+      control.textContent = state.draftValues.get(field.field_id) || '';
+      control.contentEditable = String(Boolean(field.editable) && !state.busy && !state.saveInFlight);
+      control.classList.remove('original-placeholder');
+    }
+  });
+  syncReviewControls();
 }
 function renderConflicts(conflicts) {
   els.conflictList.innerHTML = '';
-  els.conflictPanel.hidden = conflicts.length === 0;
   conflicts.forEach(conflict => {
     const row = document.createElement('label'); row.className = 'c6b-conflict-row'; row.dataset.conflictId = conflict.conflict_id;
     const title = document.createElement('strong'); title.textContent = conflict.semantic_key || '资料冲突';
     const select = document.createElement('select'); select.dataset.role = 'conflict';
     const placeholder = document.createElement('option'); placeholder.value = ''; placeholder.textContent = '请选择经核对的值'; select.appendChild(placeholder);
-    (conflict.candidates || []).forEach(candidate => { const option = document.createElement('option'); option.value = candidate.value; option.textContent = candidate.value; option.selected = conflict.resolved_value === candidate.value; select.appendChild(option); });
+    (conflict.candidates || []).forEach(candidate => {
+      const option = document.createElement('option'); option.value = candidate.value; option.textContent = candidate.value; option.selected = conflict.resolved_value === candidate.value; select.appendChild(option);
+    });
+    select.addEventListener('change', () => { setReviewDirty(true); scheduleAutoSave(); });
     row.append(title, select); els.conflictList.appendChild(row);
   });
+  els.conflictPanel.hidden = !conflicts.length;
+}
+function openEvidence(fieldId) {
+  const field = reviewField(fieldId);
+  if (!field) return;
+  state.activeFieldId = fieldId;
+  els.evidenceDrawer.hidden = false;
+  els.evidenceTitle.textContent = field.label || field.field_id;
+  els.evidenceBody.innerHTML = '';
+  const badge = document.createElement('span'); badge.className = `c6b-evidence-status ${statusClass(field)}`; badge.textContent = statusLabel(field.status);
+  const id = document.createElement('small'); id.textContent = field.field_id;
+  els.evidenceBody.append(badge, id);
+  if (
+    field.can_confirm && field.group_key !== 'services'
+    && field.suggested_value && !state.draftValues.get(fieldId)
+  ) {
+    const suggestion = document.createElement('div'); suggestion.className = 'c6b-suggestion';
+    const copy = document.createElement('p'); copy.textContent = field.suggested_value;
+    const accept = document.createElement('button'); accept.type = 'button'; accept.dataset.acceptFieldId = fieldId; accept.textContent = '采用建议';
+    accept.addEventListener('click', () => {
+      state.draftValues.set(fieldId, field.suggested_value);
+      state.acceptedFieldIds.add(fieldId); state.dirtyFieldIds.add(fieldId);
+      const control = els.documentCanvas.querySelector(`[data-field-id="${CSS.escape(fieldId)}"]`);
+      if (control) control.textContent = field.suggested_value;
+      setReviewDirty(true); scheduleAutoSave(0); openEvidence(fieldId);
+    });
+    suggestion.append(copy, accept); els.evidenceBody.appendChild(suggestion);
+  }
+  if (field.group_index != null) {
+    const select = document.createElement('select'); select.className = 'c6b-service-action';
+    [['included','正式服务'],['optional','可选服务'],['blank','保留空白'],['remove','移除']].forEach(([value,label]) => {
+      const option = document.createElement('option'); option.value = value; option.textContent = label; select.appendChild(option);
+    });
+    select.value = state.serviceActions.get(Number(field.group_index)) || 'included';
+    select.addEventListener('change', () => {
+      state.serviceActions.set(Number(field.group_index), select.value);
+      state.review.fields.filter(item => item.group_index === field.group_index).forEach(item => state.dirtyFieldIds.add(item.field_id));
+      setReviewDirty(true); scheduleAutoSave();
+    });
+    els.evidenceBody.appendChild(select);
+  }
+  const evidence = Array.isArray(field.evidence) ? field.evidence : [];
+  const heading = document.createElement('h4'); heading.textContent = evidence.length ? `材料证据（${evidence.length}）` : '暂无直接证据'; els.evidenceBody.appendChild(heading);
+  evidence.forEach(item => {
+    const entry = document.createElement('div'); entry.className = 'c6b-evidence-entry';
+    const source = document.createElement('strong'); source.textContent = item.source || '来源';
+    const fact = document.createElement('p'); fact.textContent = item.fact || '';
+    const locator = document.createElement('small'); locator.textContent = item.locator || item.location || item.source_location || '';
+    entry.append(source, fact, locator); els.evidenceBody.appendChild(entry);
+  });
+}
+function updatePendingNavigation() {
+  const pending = [...els.documentCanvas.querySelectorAll('.c6b-inline-field.needs-confirmation')]
+    .filter(control => !(state.draftValues.get(control.dataset.fieldId) || '').trim());
+  if (!pending.length) state.pendingIndex = 0;
+  else state.pendingIndex = Math.min(state.pendingIndex, pending.length - 1);
+  els.pendingPosition.textContent = `${pending.length ? state.pendingIndex + 1 : 0} / ${pending.length} 待补`;
+  els.previousPending.disabled = pending.length === 0;
+  els.nextPending.disabled = pending.length === 0;
+  return pending;
+}
+function movePending(direction) {
+  const pending = updatePendingNavigation();
+  if (!pending.length) return;
+  state.pendingIndex = (state.pendingIndex + direction + pending.length) % pending.length;
+  const control = pending[state.pendingIndex];
+  if (state.documentMode !== 'draft') applyDocumentMode('draft');
+  control.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  control.focus(); updatePendingNavigation();
 }
 function collectReview() {
-  const field_updates = [...els.reviewGroups.querySelectorAll('[data-field-id]')].filter(row => !row.querySelector('textarea').disabled).map(row => ({
-    field_id: row.dataset.fieldId, value: row.querySelector('textarea').value.trim(),
-  }));
-  const service_rows = [...els.reviewGroups.querySelectorAll('[data-group-index]')].map(row => ({
-    group_index: Number(row.dataset.groupIndex), action: row.dataset.action,
-    name: row.querySelector('[data-role="name"]').value.trim(), price: row.querySelector('[data-role="price"]').value.trim(),
-  }));
-  const conflict_resolutions = [...els.conflictList.querySelectorAll('[data-conflict-id]')].filter(row => row.querySelector('select').value).map(row => ({
-    conflict_id: row.dataset.conflictId, value: row.querySelector('select').value,
-  }));
-  return { version: state.review.version, field_updates, service_rows, conflict_resolutions };
+  const manifestFields = state.review.fields;
+  const field_updates = manifestFields
+    .filter(field => state.dirtyFieldIds.has(field.field_id) && field.group_key !== 'services' && field.editable)
+    .map(field => ({ field_id: field.field_id, value: (state.draftValues.get(field.field_id) || '').trim() }));
+  const groupIndexes = new Set(
+    manifestFields.filter(field => field.group_key === 'services' && state.dirtyFieldIds.has(field.field_id)).map(field => Number(field.group_index)),
+  );
+  const service_rows = [...groupIndexes].map(groupIndex => {
+    const fields = manifestFields.filter(field => Number(field.group_index) === groupIndex);
+    const name = fields.find(field => field.field_kind === 'repeatable_service');
+    const price = fields.find(field => field.field_kind === 'repeatable_price');
+    return {
+      group_index: groupIndex,
+      action: state.serviceActions.get(groupIndex) || 'included',
+      name: (state.draftValues.get(name.field_id) || '').trim(),
+      price: (state.draftValues.get(price.field_id) || '').trim(),
+    };
+  });
+  const conflict_resolutions = [...els.conflictList.querySelectorAll('[data-conflict-id]')]
+    .filter(row => row.querySelector('select').value)
+    .map(row => ({ conflict_id: row.dataset.conflictId, value: row.querySelector('select').value }));
+  const accepted_field_ids = [...state.acceptedFieldIds].filter(
+    fieldId => reviewField(fieldId)?.can_confirm
+      && reviewField(fieldId)?.group_key !== 'services',
+  );
+  return {
+    version: state.review.version,
+    field_updates,
+    accepted_field_ids,
+    service_rows,
+    conflict_resolutions,
+  };
 }
-async function saveReview() {
-  if (!state.review || state.busy) return false;
-  setBusy(true);
+function applySavedReview(review, preserveLocal) {
+  state.review = review;
+  if (!preserveLocal) {
+    state.draftValues = new Map(review.fields.map(field => [field.field_id, field.value || '']));
+    state.dirtyFieldIds.clear(); state.acceptedFieldIds.clear();
+  }
+  els.fieldCount.textContent = `${review.fields.length} 个字段`;
+  els.unresolvedCount.textContent = `${review.unresolved_count} 个待补充`;
+  els.documentCanvas.querySelectorAll('.c6b-inline-field').forEach(control => {
+    const field = reviewField(control.dataset.fieldId); if (!field) return;
+    control.className = `c6b-inline-field ${statusClass(field)}`;
+    if (state.documentMode === 'original') control.classList.add('original-placeholder');
+    control.dataset.status = field.status;
+    if (!preserveLocal && state.documentMode === 'draft') control.textContent = field.value || '';
+  });
+  renderConflicts(review.conflicts || []);
+  updatePendingNavigation(); syncReviewControls();
+}
+async function flushAutoSave() {
+  clearTimeout(state.saveTimer);
+  if (!state.sessionId || !state.review || !state.dirty || state.savePaused) return !state.dirty;
+  if (state.saveInFlight) { state.saveQueued = true; return false; }
+  const saveContext = captureReviewContext();
+  const payload = collectReview();
+  const generation = state.editGeneration;
+  state.saveInFlight = true; state.saveQueued = false;
+  setSaveStatus('自动保存 · 保存中', 'saving'); syncReviewControls();
   try {
-    state.review = await requestJson(`/case6b/session/${encodeURIComponent(state.sessionId)}/review`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(collectReview()),
-    });
-    renderReview(); toast('字段修订已保存'); return true;
-  } catch (error) { showError(error.message); return false; } finally { setBusy(false); }
+    const review = await requestJson(
+      `/case6b/session/${encodeURIComponent(saveContext.sessionId)}/review`,
+      { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) },
+    );
+    if (!isCurrentReviewContext(saveContext)) return false;
+    const changedDuringSave = state.editGeneration !== generation;
+    if (!changedDuringSave) {
+      state.dirty = false; state.dirtyFieldIds.clear(); state.acceptedFieldIds.clear();
+      setSaveStatus('自动保存 · 已保存', 'saved');
+    }
+    applySavedReview(review, changedDuringSave);
+    if (changedDuringSave) { setReviewDirty(true); state.saveQueued = true; }
+    return !changedDuringSave;
+  } catch (error) {
+    if (!isCurrentReviewContext(saveContext)) return false;
+    if (error.code === 'STALE_REVIEW') {
+      state.savePaused = true;
+      setSaveStatus('版本冲突 · 暂停保存', 'error');
+      if (window.confirm('草案已在其他页面更新。重新加载服务器版本会放弃本页未保存修改，是否继续？')) {
+        const review = await requestJson(`/case6b/session/${encodeURIComponent(saveContext.sessionId)}/review`);
+        if (!isCurrentReviewContext(saveContext)) return false;
+        state.review = review;
+        initializeReviewState(); await renderReview(saveContext);
+      }
+    } else {
+      state.savePaused = true;
+      setSaveStatus('保存失败 · 可重试', 'error');
+      toast(error.message);
+    }
+    return false;
+  } finally {
+    if (isCurrentReviewContext(saveContext)) {
+      state.saveInFlight = false; syncReviewControls();
+      if (state.saveQueued && !state.savePaused) { state.saveQueued = false; scheduleAutoSave(0); }
+    }
+  }
+}
+async function renderReview(reviewContext = captureReviewContext()) {
+  if (!state.review || !isCurrentReviewContext(reviewContext)) return;
+  initializeReviewState();
+  els.progress.hidden = true; els.error.hidden = true; els.reviewPanel.hidden = false;
+  els.status.textContent = '草案审阅'; setStage('review');
+  els.fieldCount.textContent = `${state.review.fields.length} 个字段`;
+  els.unresolvedCount.textContent = `${state.review.unresolved_count} 个待补充`;
+  renderConflicts(state.review.conflicts || []);
+  try {
+    const rendered = await renderDocumentEditor(reviewContext);
+    if (!rendered || !isCurrentReviewContext(reviewContext)) return;
+  } catch (error) {
+    if (!isCurrentReviewContext(reviewContext)) return;
+    renderFallbackFields(error.message);
+  }
+  if (!isCurrentReviewContext(reviewContext)) return;
+  syncReviewControls();
 }
 async function finalizeDraft() {
   if (!state.review || state.busy) return;
-  if (!await saveReview()) return;
-  if (state.review.unresolved_conflict_count > 0) {
-    showError(`仍有 ${state.review.unresolved_conflict_count} 项材料冲突待解决，无法生成草案。`);
+  if (state.saveInFlight) {
+    toast('字段正在自动保存，请稍候再生成。');
     return;
   }
-  const allow = state.review.unresolved_count === 0 || window.confirm(`仍有 ${state.review.unresolved_count} 个必填字段待确认。继续生成时会以黄色标记写入草案，是否继续？`);
+  if (state.dirty) {
+    const saved = await flushAutoSave();
+    if (!saved || state.dirty) {
+      toast('仍有未保存字段，请先重试保存。');
+      return;
+    }
+  }
+  if (state.review.unresolved_conflict_count > 0) {
+    showError(`仍有 ${state.review.unresolved_conflict_count} 项材料冲突待解决，无法生成正式文档。`);
+    return;
+  }
+  const allow = state.review.unresolved_count === 0 || window.confirm(
+    `仍有 ${state.review.unresolved_count} 个必填字段待确认。继续生成时会以黄色标记写入正式文档，是否继续？`,
+  );
   if (!allow) return;
-  setBusy(true); setStage('generate'); els.status.textContent = '正在生成'; els.progress.hidden = false; els.progressMessage.textContent = '正在保留原模板版式并生成 DOCX / PDF...';
+  setBusy(true);
+  setStage('generate');
+  els.status.textContent = '正在生成';
+  els.progress.hidden = false;
+  els.progressMessage.textContent = '正在保留原模板版式并生成正式 DOCX / PDF...';
   try {
-    const result = await requestJson(`/case6b/session/${encodeURIComponent(state.sessionId)}/finalize`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ version: state.review.version, allow_unresolved: true }),
-    });
-    els.downloadPanel.hidden = false; els.downloadDocx.disabled = !result.docx_ready; els.downloadPdf.disabled = !result.pdf_ready;
-    els.downloadMessage.textContent = result.pdf_error ? `${result.pdf_error}；DOCX 仍可下载。` : 'DOCX 与 PDF 均已准备完成，请在正式使用前人工复核。';
-    els.status.textContent = '已生成'; els.progress.hidden = true; updateHistory({ title: currentHistory()?.title || '服务协议草案', sessionId: state.sessionId });
-  } catch (error) { showError(error.message); } finally { setBusy(false); }
+    const result = await requestJson(
+      `/case6b/session/${encodeURIComponent(state.sessionId)}/finalize`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          version: state.review.version,
+          allow_unresolved: true,
+        }),
+      },
+    );
+    els.downloadPanel.hidden = false;
+    els.downloadDocx.disabled = !result.docx_ready;
+    els.downloadPdf.disabled = !result.pdf_ready;
+    els.downloadMessage.textContent = result.pdf_error
+      ? `${result.pdf_error}；DOCX 仍可下载。`
+      : 'DOCX 与 PDF 均已准备完成，请在正式使用前人工复核。';
+    els.status.textContent = '已生成';
+    els.progress.hidden = true;
+    updateHistory({ title: currentHistory()?.title || '服务协议草案', sessionId: state.sessionId });
+  } catch (error) {
+    showError(error.message);
+  } finally {
+    setBusy(false);
+  }
 }
 async function download(format) {
   if (!state.sessionId) return;
@@ -490,16 +1090,31 @@ async function resetCurrent(confirmFirst = true) {
   }
 }
 function clearView(updateCurrent) {
+  clearTimeout(state.saveTimer);
+  invalidateReviewContext();
+  const analysisController = state.analysisController;
+  state.analysisController = null; state.analysisRunToken = null; state.analysisCompletion = null; state.cancelRunToken = null;
+  analysisController?.abort();
   state.template = null; state.materials = []; state.sessionId = null; state.review = null; state.templatePreflight = null;
+  state.documentView = null; state.analysisRunId = null; state.processing = false; state.cancelRequested = false;
+  state.dirty = false; state.dirtyFieldIds = new Set(); state.acceptedFieldIds = new Set(); state.draftValues = new Map();
+  state.serviceActions = new Map(); state.saveInFlight = false; state.saveQueued = false; state.savePaused = false;
+  state.documentMode = 'draft'; state.activeFieldId = null; state.pendingIndex = 0; state.fallbackMode = false;
   els.templateInput.value = ''; els.materialsInput.value = ''; els.templateState.textContent = '未选择'; els.materialsState.textContent = '未选择';
   els.templateActions.hidden = true;
   els.selectedFiles.innerHTML = ''; els.materialStatus.innerHTML = ''; els.idle.hidden = false; els.progress.hidden = true; els.error.hidden = true;
   els.reviewPanel.hidden = true; els.downloadPanel.hidden = true; els.retry.hidden = true; els.status.textContent = '等待文件'; setStage('upload'); updateStartButton();
-  els.templatePreflight.hidden = true; els.conflictPanel.hidden = true;
+  els.templatePreflight.hidden = true; els.conflictPanel.hidden = true; els.evidenceDrawer.hidden = true;
+  els.documentCanvas.innerHTML = ''; els.documentCanvas.hidden = false; els.documentLoading.hidden = false; els.editorFallback.hidden = true;
+  if (els.cancelAnalysis) { els.cancelAnalysis.hidden = true; els.cancelAnalysis.disabled = true; els.cancelAnalysis.textContent = '中断并修改文件'; }
+  els.differenceToggle.checked = true; els.documentCanvas.classList.add('show-differences');
   if (updateCurrent && currentHistory()) updateHistory({ title: '新建草案', sessionId: null, expired: false });
   syncUploadControls();
 }
-function newTask() { if (state.busy) return; state.currentLocalId = null; ensureHistory(); clearView(false); closeSidebar(); }
+async function newTask() {
+  if (state.busy || !(await saveBeforeNavigation())) return;
+  state.currentLocalId = null; ensureHistory(); clearView(false); closeSidebar();
+}
 function closeSidebar() { els.sidebar.classList.remove('open'); els.sidebarOverlay.classList.remove('open'); }
 
 bindDropzone(els.templateDropzone, els.templateInput, files => setTemplate(files[0]));
@@ -507,7 +1122,18 @@ bindDropzone(els.materialsDropzone, els.materialsInput, files => addMaterials(fi
 els.removeTemplate.addEventListener('click', removeTemplate);
 els.replaceTemplate.addEventListener('click', () => els.templateInput.click());
 els.start.addEventListener('click', startWorkflow); els.retry.addEventListener('click', () => retryFailed());
-els.saveReview.addEventListener('click', saveReview); els.finalize.addEventListener('click', finalizeDraft);
+els.cancelAnalysis.addEventListener('click', cancelAnalysis); els.finalize.addEventListener('click', finalizeDraft);
+els.documentMode.addEventListener('click', event => {
+  const button = event.target.closest('[data-document-mode]');
+  if (button) applyDocumentMode(button.dataset.documentMode);
+});
+els.differenceToggle.addEventListener('change', () => {
+  els.documentCanvas.classList.toggle('show-differences', els.differenceToggle.checked);
+});
+els.previousPending.addEventListener('click', () => movePending(-1));
+els.nextPending.addEventListener('click', () => movePending(1));
+els.evidenceClose.addEventListener('click', () => { els.evidenceDrawer.hidden = true; });
+els.retrySave.addEventListener('click', () => { state.savePaused = false; scheduleAutoSave(0); });
 els.downloadDocx.addEventListener('click', () => download('docx')); els.downloadPdf.addEventListener('click', () => download('pdf'));
 els.reset.addEventListener('click', () => resetCurrent(true)); els.newTask.addEventListener('click', newTask);
 els.sidebarToggle.addEventListener('click', () => { els.sidebar.classList.add('open'); els.sidebarOverlay.classList.add('open'); });

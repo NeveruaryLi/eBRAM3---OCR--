@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from api.pdf_chat import session_metadata, session_results_store, session_store
 from app import app
 from cases.case6b_service_agreement import (
+    Case6BDraftingHandler,
     Case6BSession,
     MaterialRecord,
     _merge_manifest,
@@ -21,6 +22,7 @@ from cases.case6b_service_agreement import (
     _validate_agent_fields,
     _apply_profile_evidence_enrichment,
     apply_review_changes,
+    begin_analysis_run,
     build_template_preflight,
     build_agent_l_fill_payload,
     build_agent_l_template_payload,
@@ -34,6 +36,7 @@ from cases.case6b_service_agreement import (
     ocr_submission_filename,
     parse_agent_json,
     render_draft_docx,
+    request_analysis_cancel,
     validate_material,
     validate_template,
 )
@@ -332,6 +335,7 @@ class Case6BCoreTests(unittest.TestCase):
             "Word 内容控件": b"<w:sdt>",
             "文本框": b"<w:txbxContent>",
             "邮件合并域": b"MERGEFIELD",
+            "altChunk": b'<w:altChunk r:id="rId999"/>',
         }
         for expected, marker in markers.items():
             source = zipfile.ZipFile(io.BytesIO(base.getvalue()))
@@ -345,6 +349,56 @@ class Case6BCoreTests(unittest.TestCase):
             with self.subTest(expected=expected):
                 with self.assertRaisesRegex(ValueError, expected):
                     validate_template(output.getvalue(), "complex.docx")
+
+    def test_rejects_external_docx_preview_resources(self):
+        base = io.BytesIO()
+        document = Document()
+        document.add_paragraph("Field: ____________________")
+        document.save(base)
+        source = zipfile.ZipFile(io.BytesIO(base.getvalue()))
+        output = io.BytesIO()
+        relationship = (
+            b'<Relationship Id="rId999" '
+            b'Type="http://schemas.openxmlformats.org/officeDocument/2006/'
+            b'relationships/image" Target="https://attacker.invalid/pixel.png" '
+            b'TargetMode="External"/>'
+        )
+        with source, zipfile.ZipFile(output, "w") as target:
+            for item in source.infolist():
+                content = source.read(item.filename)
+                if item.filename == "word/_rels/document.xml.rels":
+                    content = content.replace(
+                        b"</Relationships>",
+                        relationship + b"</Relationships>",
+                    )
+                target.writestr(item, content)
+        with self.assertRaisesRegex(ValueError, "外部资源"):
+            validate_template(output.getvalue(), "external-resource.docx")
+
+    def test_rejects_docx_preview_style_injection(self):
+        base = io.BytesIO()
+        document = Document()
+        document.add_paragraph("Field: ____________________")
+        document.save(base)
+        source = zipfile.ZipFile(io.BytesIO(base.getvalue()))
+        output = io.BytesIO()
+        with source, zipfile.ZipFile(output, "w") as target:
+            for item in source.infolist():
+                content = source.read(item.filename)
+                if item.filename == "word/styles.xml":
+                    replacement = (
+                        b'w:styleId="Normal}{body{background:url('
+                        b'https://attacker.invalid/pixel)"'
+                    )
+                    self.assertIn(b'w:styleId="Normal"', content)
+                    content = content.replace(
+                        b'w:styleId="Normal"',
+                        replacement,
+                        1,
+                    )
+                target.writestr(item, content)
+        with self.assertRaisesRegex(ValueError, "样式标识"):
+            validate_template(output.getvalue(), "unsafe-style.docx")
 
     def test_extracts_xlsx_with_sheet_and_cell_evidence(self):
         content = (
@@ -409,10 +463,15 @@ class Case6BCoreTests(unittest.TestCase):
         second_content = second["messages"][0]["content"]
         self.assertEqual(["text", "document"], [item["type"] for item in first_content])
         self.assertEqual(["text", "document"], [item["type"] for item in second_content])
-        self.assertIn("original DOCX agreement template", first_content[0]["text"])
+        self.assertIn("original agreement template", first_content[0]["text"])
         self.assertIn("case6b_template_context.md", first_content[0]["text"])
+        self.assertIn("first document attachment", first_content[0]["text"])
+        self.assertIn("second document attachment", first_content[0]["text"])
+        self.assertIn("Do not rely on the filenames shown", first_content[0]["text"])
         self.assertIn("return exactly one JSON Object", first_content[0]["text"])
         self.assertIn("case6b_field_fill_context.md", second_content[0]["text"])
+        self.assertIn("only document attachment", second_content[0]["text"])
+        self.assertIn("Do not rely on the filename shown", second_content[0]["text"])
         self.assertIn("complete field list", second_content[0]["text"])
         self.assertIn("return exactly one JSON Object", second_content[0]["text"])
         self.assertEqual(
@@ -431,10 +490,107 @@ class Case6BCoreTests(unittest.TestCase):
         ).decode("utf-8")
         self.assertIn("[CASE6B_PHASE:TEMPLATE_PARSE]", template_context)
         self.assertIn("[CASE6B_PHASE:FIELD_FILL]", fill_context)
+        self.assertIn("logical_filename: `case6b_template_context.md`", template_context)
+        self.assertIn("document_role: `template_context`", template_context)
+        self.assertIn(
+            "logical_filename: `case6b_field_fill_context.md`",
+            fill_context,
+        )
+        self.assertIn("document_role: `field_fill_context`", fill_context)
         self.assertIn("## Detected fields", template_context)
         self.assertIn("## Evidence summary", fill_context)
         self.assertTrue(first["conversation_config"]["short_term_memory"])
         self.assertTrue(second["conversation_config"]["short_term_memory"])
+
+    def test_needs_confirmation_preserves_suggestion_separately(self):
+        manifest = {"fields": [{"field_id": "p001_f01", "field_kind": "scalar"}]}
+        values = _validate_agent_fields(
+            manifest,
+            {
+                "fields": [
+                    {
+                        "field_id": "p001_f01",
+                        "status": "NEEDS_CONFIRMATION",
+                        "value": "1 August 2026",
+                        "evidence": [{"source": "email.pdf", "fact": "Proposed date"}],
+                    }
+                ]
+            },
+            filled=True,
+        )
+        self.assertEqual("", values[0]["value"])
+        self.assertEqual("1 August 2026", values[0]["suggested_value"])
+
+    def test_cancelled_analysis_discards_partial_results_and_stores(self):
+        session = Case6BSession(
+            template=validate_template(TEMPLATE.read_bytes(), TEMPLATE.name),
+            materials=[MaterialRecord("m1", "facts.pdf", "pdf", b"%PDF", 1)],
+            field_manifest=extract_template_manifest(TEMPLATE.read_bytes()),
+        )
+        local_store = {"session": [session]}
+        local_results = {}
+        run_id = begin_analysis_run(session)
+
+        async def slow_summary(_material):
+            await asyncio.sleep(60)
+            return []
+
+        async def scenario():
+            handler = Case6BDraftingHandler()
+
+            async def consume():
+                async for _ in handler.analyze("session", local_store, local_results):
+                    pass
+
+            task = asyncio.create_task(consume())
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            request_analysis_cancel(session, run_id)
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+        with patch(
+            "cases.case6b_service_agreement._summarize_material",
+            new=slow_summary,
+        ):
+            asyncio.run(scenario())
+        self.assertEqual("cancelled", session.analysis_state)
+        self.assertEqual({}, local_store)
+        self.assertEqual({}, local_results)
+        self.assertEqual([], session.fields)
+        self.assertEqual("pending", session.materials[0].status)
+
+    def test_agent_l_failure_marks_analysis_failed_and_allows_retry(self):
+        material = MaterialRecord("m1", "facts.pdf", "pdf", b"%PDF", 1)
+        material.status = "complete"
+        material.facts = [{"fact": "Provider is Example Limited"}]
+        session = Case6BSession(
+            template=validate_template(TEMPLATE.read_bytes(), TEMPLATE.name),
+            materials=[material],
+            field_manifest=extract_template_manifest(TEMPLATE.read_bytes()),
+        )
+        local_store = {"session": [session]}
+        local_results = {}
+        first_run_id = begin_analysis_run(session)
+
+        async def scenario():
+            handler = Case6BDraftingHandler()
+            with self.assertRaisesRegex(RuntimeError, "Agent L failed"):
+                async for _ in handler.analyze("session", local_store, local_results):
+                    pass
+
+        with patch(
+            "cases.case6b_service_agreement._run_agent_l",
+            new=AsyncMock(side_effect=RuntimeError("Agent L failed")),
+        ):
+            asyncio.run(scenario())
+
+        self.assertEqual("failed", session.analysis_state)
+        self.assertIsNone(session.active_task)
+        self.assertEqual({}, local_results)
+        retry_run_id = begin_analysis_run(session)
+        self.assertNotEqual(first_run_id, retry_run_id)
+        self.assertEqual("running", session.analysis_state)
 
     def test_agent_json_parser_accepts_fenced_object(self):
         parsed = parse_agent_json('```json\n{"fields": [], "conflicts": []}\n```')
@@ -566,6 +722,57 @@ class Case6BCoreTests(unittest.TestCase):
         self.assertEqual("FILLED", target["status"])
         self.assertEqual(evidence, target["evidence"])
 
+    def test_review_can_accept_unchanged_agent_suggestion(self):
+        fields = json.loads((FIXTURES / "expected_fill.json").read_text("utf-8"))[
+            "fields"
+        ]
+        session = Case6BSession(
+            template=validate_template(TEMPLATE.read_bytes(), TEMPLATE.name),
+            materials=[],
+            field_manifest=json.loads(
+                (FIXTURES / "template_field_manifest.json").read_text("utf-8")
+            ),
+            fields=fields,
+            review_version=1,
+        )
+        target = next(field for field in fields if field["field_id"] == "p002_f02")
+        apply_review_changes(
+            session,
+            version=1,
+            field_updates=[],
+            service_rows=[],
+            accepted_field_ids=[target["field_id"]],
+        )
+        self.assertEqual("USER_CONFIRMED", target["status"])
+        self.assertEqual("user_confirmed", target["source_type"])
+
+    def test_review_change_invalidates_generated_files_but_keeps_document_shell(self):
+        fields = json.loads((FIXTURES / "expected_fill.json").read_text("utf-8"))[
+            "fields"
+        ]
+        session = Case6BSession(
+            template=validate_template(TEMPLATE.read_bytes(), TEMPLATE.name),
+            materials=[],
+            field_manifest=json.loads(
+                (FIXTURES / "template_field_manifest.json").read_text("utf-8")
+            ),
+            fields=fields,
+            review_version=1,
+            document_shell=b"shell-docx",
+            document_shell_hash="a" * 64,
+            generated_docx=b"draft-docx",
+            generated_pdf=b"%PDF-draft",
+        )
+        apply_review_changes(
+            session,
+            version=1,
+            field_updates=[{"field_id": "p002_f01", "value": "1 August 2026"}],
+            service_rows=[],
+        )
+        self.assertEqual(b"shell-docx", session.document_shell)
+        self.assertEqual("a" * 64, session.document_shell_hash)
+        self.assertIsNone(session.generated_docx)
+        self.assertIsNone(session.generated_pdf)
     def test_docx_fill_preserves_signature_blanks_and_removes_unused_service_rows(self):
         fields = json.loads((FIXTURES / "expected_fill.json").read_text("utf-8"))[
             "fields"
@@ -588,6 +795,39 @@ class Case6BCoreTests(unittest.TestCase):
             cell.text for table in document.tables for row in table.rows for cell in row.cells
         )
         self.assertIn("Signature:_________________________", signature_text)
+
+    def test_conflict_resolution_requires_unique_editable_target(self):
+        fields = json.loads((FIXTURES / "expected_fill.json").read_text("utf-8"))[
+            "fields"
+        ]
+        session = Case6BSession(
+            template=validate_template(TEMPLATE.read_bytes(), TEMPLATE.name),
+            materials=[],
+            field_manifest=json.loads(
+                (FIXTURES / "template_field_manifest.json").read_text("utf-8")
+            ),
+            fields=fields,
+            conflicts=[
+                {
+                    "conflict_id": "unknown-1",
+                    "semantic_key": "not_in_manifest",
+                    "candidates": [{"value": "A"}, {"value": "B"}],
+                    "resolved": False,
+                }
+            ],
+            review_version=1,
+        )
+        with self.assertRaisesRegex(ValueError, "唯一对应"):
+            apply_review_changes(
+                session,
+                version=1,
+                field_updates=[],
+                service_rows=[],
+                conflict_resolutions=[
+                    {"conflict_id": "unknown-1", "value": "A"}
+                ],
+            )
+        self.assertFalse(session.conflicts[0]["resolved"])
 
     def test_review_supports_optional_and_blank_service_rows(self):
         manifest = json.loads(
@@ -1168,6 +1408,80 @@ class Case6BRouteTests(unittest.TestCase):
         self.assertEqual(200, report.status_code)
         self.assertTrue(report.content.startswith(b"PK"))
 
+    def test_document_view_returns_word_shell_with_unique_field_markers(self):
+        session_id = self._ready_session()
+        view = self.client.get(f"/case6b/session/{session_id}/document-view")
+        self.assertEqual(200, view.status_code, view.text)
+        payload = view.json()
+        self.assertEqual(37, len(payload["fields"]))
+        shell = self.client.get(payload["shell_url"])
+        self.assertEqual(200, shell.status_code, shell.text)
+        self.assertIn(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            shell.headers["content-type"],
+        )
+        document = Document(io.BytesIO(shell.content))
+        text = "\n".join(
+            [paragraph.text for paragraph in document.paragraphs]
+            + [
+                paragraph.text
+                for table in document.tables
+                for row in table.rows
+                for cell in row.cells
+                for paragraph in cell.paragraphs
+            ]
+        )
+        for field in payload["fields"]:
+            self.assertEqual(1, text.count(field["marker"]), field["field_id"])
+
+    def test_document_shell_rejects_stale_manifest_hash(self):
+        session_id = self._ready_session()
+        response = self.client.get(
+            f"/case6b/session/{session_id}/document-shell"
+            f"?manifest_hash={'0' * 64}"
+        )
+        self.assertEqual(409, response.status_code)
+        self.assertEqual("STALE_DOCUMENT_VIEW", response.json()["detail"]["code"])
+
+    def test_cancel_is_idempotent_and_rejects_stale_run(self):
+        session_id = self._ready_session()
+        session = session_store[session_id][0]
+        session.analysis_run_id = "run-current-1234"
+        session.analysis_state = "running"
+        stale = self.client.post(
+            f"/case6b/session/{session_id}/cancel",
+            json={"run_id": "run-stale-12345"},
+        )
+        self.assertEqual(409, stale.status_code)
+        cancelled = self.client.post(
+            f"/case6b/session/{session_id}/cancel",
+            json={"run_id": "run-current-1234"},
+        )
+        repeated = self.client.post(
+            f"/case6b/session/{session_id}/cancel",
+            json={"run_id": "run-current-1234"},
+        )
+        self.assertEqual(202, cancelled.status_code)
+        self.assertEqual(202, repeated.status_code)
+        self.assertTrue(session.cancel_event.is_set())
+        self.assertEqual("cancelling", session.analysis_state)
+
+    def test_finalize_renders_current_review_without_pdf_preview_cache(self):
+        session_id = self._ready_session()
+        session = session_store[session_id][0]
+        with (
+            patch("api.case6b_routes.render_draft_docx", return_value=b"draft-docx") as render,
+            patch("api.case6b_routes.convert_docx_to_pdf", return_value=b"%PDF-draft") as convert,
+        ):
+            finalized = self.client.post(
+                f"/case6b/session/{session_id}/finalize",
+                json={"version": 1, "allow_unresolved": True},
+            )
+        self.assertEqual(200, finalized.status_code, finalized.text)
+        self.assertEqual(b"draft-docx", session.generated_docx)
+        self.assertEqual(b"%PDF-draft", session.generated_pdf)
+        render.assert_called_once()
+        convert.assert_called_once()
     def test_finalize_is_blocked_by_unresolved_conflicts(self):
         session_id = self._ready_session()
         session_store[session_id][0].conflicts = [

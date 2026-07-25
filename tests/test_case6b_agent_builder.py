@@ -112,7 +112,7 @@ class Case6BAgentBuilderTests(unittest.TestCase):
         )
         self.assertEqual(generated["multiModal"]["multiModalInput"]["fileLimit"], 2)
         self.assertIn(
-            "case6b_template_context.md",
+            "document role",
             next(
                 message
                 for message in components[4]["messages"]
@@ -120,7 +120,7 @@ class Case6BAgentBuilderTests(unittest.TestCase):
             )["text"],
         )
         self.assertIn(
-            "case6b_field_fill_context.md",
+            "generated names",
             next(
                 message
                 for message in components[6]["messages"]
@@ -128,8 +128,10 @@ class Case6BAgentBuilderTests(unittest.TestCase):
             )["text"],
         )
         poc_source = (CASE6B_DIR / "run_case6b_poc.py").read_text(encoding="utf-8")
-        self.assertIn("is the original DOCX agreement", poc_source)
-        self.assertIn("field list and evidence summary from all source files", poc_source)
+        self.assertIn("first document attachment", poc_source)
+        self.assertIn("document_role: `template_context`", poc_source)
+        self.assertIn("document_role: `field_fill_context`", poc_source)
+        self.assertIn("generated attachment names", poc_source)
         self.assertIn("Object and no commentary or Markdown fences", poc_source)
 
     def test_case6b_fixtures_cover_template_and_all_nine_materials(self):

@@ -15,11 +15,13 @@ import subprocess
 import tempfile
 import uuid
 import zipfile
+import xml.etree.ElementTree as ET
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncGenerator
+from urllib.parse import urlsplit
 
 import fitz
 import httpx
@@ -73,6 +75,7 @@ _BLANK_RE = re.compile(r"_{4,}")
 _BRACKET_RE = re.compile(
     r"\[([A-Za-z\u3400-\u9fff][A-Za-z0-9_\u3400-\u9fff ]{0,80})\]"
 )
+_SAFE_STYLE_ID_RE = re.compile(r"^[\w.-]{1,128}$", re.UNICODE)
 _LOCATOR_RE = re.compile(
     r"^(?:paragraph:(?P<paragraph>\d+)|"
     r"table:(?P<table>\d+)/row:(?P<row>\d+)/cell:(?P<cell>\d+)/paragraph:(?P<cellpara>\d+))"
@@ -112,13 +115,151 @@ class Case6BSession:
     template_version: int = 1
     full_summary: dict[str, Any] | None = None
     review_version: int = 0
+    document_shell: bytes | None = None
+    document_shell_hash: str | None = None
     generated_docx: bytes | None = None
     generated_pdf: bytes | None = None
     pdf_error: str | None = None
     agent_l_conversation_id: str | None = None
+    analysis_state: str = "uploaded"
+    analysis_run_id: str | None = None
+    discard_requested: bool = False
+    cancel_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    active_task: asyncio.Task[Any] | None = field(default=None, repr=False)
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+
+
+def begin_analysis_run(session: Case6BSession) -> str:
+    if session.analysis_state in {"running", "cancelling"}:
+        raise ValueError("当前草案正在处理中，请稍候")
+    session.analysis_run_id = uuid.uuid4().hex
+    session.analysis_state = "running"
+    session.discard_requested = False
+    session.cancel_event = asyncio.Event()
+    session.active_task = None
+    return session.analysis_run_id
+
+
+def request_analysis_cancel(session: Case6BSession, run_id: str) -> bool:
+    if session.analysis_run_id != run_id:
+        raise ValueError("分析任务版本已变化，请刷新页面")
+    if session.analysis_state in {"cancelled", "uploaded"}:
+        return False
+    session.discard_requested = True
+    session.analysis_state = "cancelling"
+    session.cancel_event.set()
+    task = session.active_task
+    if task is not None and not task.done():
+        task.cancel()
+        return True
+    return False
+
+
+def _analysis_cancelled(session: Case6BSession, run_id: str) -> bool:
+    return (
+        session.analysis_run_id != run_id
+        or session.discard_requested
+        or session.cancel_event.is_set()
+    )
+
+
+def _raise_if_analysis_cancelled(session: Case6BSession, run_id: str) -> None:
+    if _analysis_cancelled(session, run_id):
+        raise asyncio.CancelledError()
+
+
+def _discard_analysis_results(session: Case6BSession) -> None:
+    for material in session.materials:
+        material.status = "pending"
+        material.facts = []
+        material.error = None
+        material.conversation_id = None
+    session.fields = []
+    session.conflicts = []
+    session.full_summary = None
+    session.review_version = 0
+    session.document_shell = None
+    session.document_shell_hash = None
+    session.generated_docx = None
+    session.generated_pdf = None
+    session.pdf_error = None
+    session.agent_l_conversation_id = None
+    session.analysis_state = "cancelled"
+    session.updated_at = datetime.utcnow()
+
+
+def _xml_local_name(value: str) -> str:
+    return value.rsplit("}", 1)[-1]
+
+
+def _validate_docx_preview_safety(archive: zipfile.ZipFile) -> None:
+    """Reject active/externally loaded OOXML features before browser preview."""
+
+    names = set(archive.namelist())
+    for name in names:
+        if not name.startswith("word/"):
+            continue
+        if name.endswith(".xml"):
+            raw = archive.read(name)
+            try:
+                root = ET.fromstring(raw)
+            except ET.ParseError as exc:
+                raise ValueError("DOCX 模板包含损坏的 Word XML") from exc
+            for element in root.iter():
+                local_name = _xml_local_name(str(element.tag))
+                namespace = (
+                    str(element.tag).split("}", 1)[0].lstrip("{").lower()
+                    if "}" in str(element.tag)
+                    else ""
+                )
+                if local_name == "altChunk":
+                    raise ValueError("V1 暂不支持包含 altChunk HTML 的 DOCX 模板")
+                if local_name == "pict" or "vml" in namespace:
+                    for value in element.attrib.values():
+                        compact_value = re.sub(r"\s+", "", str(value).lower())
+                        if any(
+                            token in compact_value
+                            for token in (
+                                "url(",
+                                "@import",
+                                "expression(",
+                                "javascript:",
+                                "position:fixed",
+                            )
+                        ):
+                            raise ValueError("DOCX 模板包含不安全的 VML 样式")
+                if name == "word/styles.xml":
+                    for attribute, value in element.attrib.items():
+                        if (
+                            _xml_local_name(str(attribute)) == "styleId"
+                            and not _SAFE_STYLE_ID_RE.fullmatch(str(value))
+                        ):
+                            raise ValueError("DOCX 模板包含不安全的样式标识")
+            if name == "word/styles.xml" and (
+                b"url(" in raw.lower() or b"@import" in raw.lower()
+            ):
+                raise ValueError("DOCX 模板包含不安全的外部样式")
+            continue
+        if not name.endswith(".rels"):
+            continue
+        try:
+            relationships = ET.fromstring(archive.read(name))
+        except ET.ParseError as exc:
+            raise ValueError("DOCX 模板包含损坏的关系定义") from exc
+        for relationship in relationships:
+            relationship_type = str(relationship.attrib.get("Type", ""))
+            target_mode = str(relationship.attrib.get("TargetMode", ""))
+            target = str(relationship.attrib.get("Target", ""))
+            if relationship_type.lower().endswith("/afchunk"):
+                raise ValueError("V1 暂不支持包含 altChunk HTML 的 DOCX 模板")
+            if target_mode.lower() != "external":
+                continue
+            if not relationship_type.lower().endswith("/hyperlink"):
+                raise ValueError("DOCX 模板包含不支持的外部资源")
+            if urlsplit(target).scheme.lower() not in {"http", "https", "mailto"}:
+                raise ValueError("DOCX 模板包含不安全的外部链接")
 
 
 def _open_docx(content: bytes) -> Document:
@@ -142,6 +283,7 @@ def _open_docx(content: bytes) -> Document:
             for present, label in unsupported:
                 if present:
                     raise ValueError(f"V1 暂不支持包含{label}的 DOCX 模板")
+            _validate_docx_preview_safety(archive)
         return Document(io.BytesIO(content))
     except ValueError:
         raise
@@ -649,10 +791,16 @@ def build_agent_l_template_payload(
     context = build_template_context_markdown(template, manifest)
     guidance = (
         "[CASE6B_PHASE:TEMPLATE_PARSE]\n"
-        f"Attachment 1, {template.filename}, is the original DOCX agreement template. "
+        f"The first document attachment (DOCX; logical name `{template.filename}`) "
+        "is the original agreement template. "
         "Use it only to understand the document layout and surrounding clauses. "
-        "Attachment 2, case6b_template_context.md, contains the application-detected "
-        "placeholders, stable field IDs, locators, and the required output schema. "
+        "The second document attachment (Markdown; logical name "
+        "`case6b_template_context.md`; document role `template_context`) contains "
+        "the application-detected placeholders, stable field IDs, locators, and the "
+        "required output schema. GPTBots may replace base64 attachment filenames with "
+        "generated names in the conversation log. Do not rely on the filenames shown "
+        "by the platform; identify both documents by attachment order, format, phase "
+        "marker, and the Markdown document-identity header. "
         "Read both attachments together, explain every detected field without adding, "
         "removing, reordering, or filling any field, and return exactly one JSON Object "
         "that follows the Markdown contract. Do not return commentary or Markdown fences."
@@ -705,8 +853,13 @@ def build_agent_l_fill_payload(
     context = build_field_fill_context_markdown(field_list, full_summary)
     guidance = (
         "[CASE6B_PHASE:FIELD_FILL]\n"
-        "The attachment case6b_field_fill_context.md contains the complete field list "
-        "from the first stage and the evidence summary extracted from all source files. "
+        "The only document attachment (Markdown; logical name "
+        "`case6b_field_fill_context.md`; document role `field_fill_context`) contains "
+        "the complete field list from the first stage and the evidence summary extracted "
+        "from all source files. GPTBots may replace the base64 attachment filename with "
+        "a generated name in the conversation log. Do not rely on the filename shown by "
+        "the platform; identify the document by its phase marker and document-identity "
+        "header. "
         "Treat the attachment as the sole source of field IDs and factual values. "
         "Fill every listed field once, preserve evidence references, mark unsupported "
         "facts with the allowed non-filled status, and return exactly one JSON Object "
@@ -768,6 +921,13 @@ def build_template_context_markdown(
         "",
         "# Case 6B template context",
         "",
+        "## Document identity",
+        "",
+        "- logical_filename: `case6b_template_context.md`",
+        "- document_role: `template_context`",
+        "- attachment_position: `2`",
+        "- content_authority: `application_generated`",
+        "",
         "## Template metadata",
         "",
         f"- filename: `{template.filename}`",
@@ -821,6 +981,13 @@ def build_field_fill_context_markdown(
         "[CASE6B_PHASE:FIELD_FILL]",
         "",
         "# Case 6B field-fill context",
+        "",
+        "## Document identity",
+        "",
+        "- logical_filename: `case6b_field_fill_context.md`",
+        "- document_role: `field_fill_context`",
+        "- attachment_position: `1`",
+        "- content_authority: `application_generated`",
         "",
         "## Field list",
         "",
@@ -933,6 +1100,72 @@ def _replace_blank(paragraph, blank_index: int, replacement: str, highlight: boo
                 run.text = after
                 break
             run.text = ""
+
+
+def editable_field_marker(field_id: str) -> str:
+    return f"⟦C6B:{field_id}⟧"
+
+
+def build_editable_shell(
+    template_bytes: bytes,
+    manifest: dict[str, Any],
+) -> tuple[bytes, str]:
+    document = _open_docx(template_bytes)
+    grouped: dict[str, list[tuple[int, str]]] = {}
+    for definition in manifest.get("fields", []):
+        match = _LOCATOR_RE.match(str(definition.get("locator", "")))
+        if not match:
+            raise ValueError("模板字段定位无效")
+        locator = str(definition["locator"])
+        base = locator.rsplit("/", 1)[0]
+        grouped.setdefault(base, []).append(
+            (int(match.group("blank")), str(definition["field_id"]))
+        )
+    for base, values in grouped.items():
+        for blank_index, field_id in sorted(values, reverse=True):
+            paragraph, _ = _paragraph_for_locator(
+                document, f"{base}/blank:{blank_index}"
+            )
+            _replace_blank(
+                paragraph,
+                blank_index,
+                editable_field_marker(field_id),
+                False,
+            )
+    output = io.BytesIO()
+    document.save(output)
+    shell = output.getvalue()
+    return shell, hashlib.sha256(shell).hexdigest()
+
+
+def document_view_payload(session: Case6BSession, session_id: str) -> dict[str, Any]:
+    if not session.fields:
+        raise ValueError("字段分析尚未完成")
+    if session.document_shell is None or session.document_shell_hash is None:
+        shell, digest = build_editable_shell(
+            session.template.content,
+            session.field_manifest,
+        )
+        session.document_shell = shell
+        session.document_shell_hash = digest
+    definitions = {item["field_id"]: item for item in session.field_manifest["fields"]}
+    return {
+        "review_version": session.review_version,
+        "manifest_hash": session.document_shell_hash,
+        "shell_url": (
+            f"/case6b/session/{session_id}/document-shell"
+            f"?manifest_hash={session.document_shell_hash}"
+        ),
+        "fields": [
+            {
+                "field_id": field_id,
+                "marker": editable_field_marker(field_id),
+                "original_placeholder": definition.get("placeholder_text", ""),
+                "field_kind": definition.get("field_kind", "scalar"),
+            }
+            for field_id, definition in definitions.items()
+        ],
+    }
 
 
 def _append_paragraph_after(paragraph, text: str):
@@ -1145,6 +1378,7 @@ def apply_review_changes(
     field_updates: list[dict[str, Any]],
     service_rows: list[dict[str, Any]],
     conflict_resolutions: list[dict[str, Any]] | None = None,
+    accepted_field_ids: list[str] | None = None,
 ) -> int:
     if version != session.review_version:
         raise ValueError("审阅内容已更新，请刷新后再提交")
@@ -1173,6 +1407,29 @@ def apply_review_changes(
         fields_by_id[field_id]["value"] = value
         fields_by_id[field_id]["evidence"] = (
             [{"source": "User confirmation", "fact": value}] if value else []
+        )
+    for field_id in accepted_field_ids or []:
+        if field_id not in fields_by_id or field_id not in manifest_by_id:
+            raise ValueError(f"未知字段：{field_id}")
+        definition = manifest_by_id[field_id]
+        target = fields_by_id[field_id]
+        if (
+            definition.get("field_kind") in SIGNATURE_KINDS
+            or definition.get("group_key") == "services"
+        ):
+            raise ValueError("该字段不能单独接受建议")
+        value = str(target.get("suggested_value") or target.get("value", "")).strip()
+        if not value:
+            raise ValueError("空白字段没有可接受的建议值")
+        target["value"] = value
+        target["suggested_value"] = ""
+        target.setdefault("original", deepcopy(target))
+        target.update(
+            {
+                "status": "USER_CONFIRMED",
+                "source_type": "user_confirmed",
+                "evidence": [{"source": "User confirmation", "fact": value}],
+            }
         )
     for row in service_rows:
         group_index = int(row.get("group_index", 0))
@@ -1255,9 +1512,6 @@ def apply_review_changes(
         value = str(resolution.get("value", "")).strip()
         if not value:
             raise ValueError("冲突解决值不能为空")
-        conflict["resolved"] = True
-        conflict["resolved_value"] = value
-        conflict["source_type"] = "user_confirmed"
         matching_definitions = [
             definition
             for definition in session.field_manifest["fields"]
@@ -1265,22 +1519,26 @@ def apply_review_changes(
             and definition.get("group_key") != "services"
             and definition.get("field_kind") not in SIGNATURE_KINDS
         ]
-        if len(matching_definitions) == 1:
-            target = fields_by_id[matching_definitions[0]["field_id"]]
-            target.setdefault("original", deepcopy(target))
-            target.update(
-                {
-                    "status": "USER_CONFIRMED",
-                    "value": value,
-                    "evidence": [
-                        {
-                            "source": "User conflict resolution",
-                            "fact": value,
-                        }
-                    ],
-                    "source_type": "user_confirmed",
-                }
-            )
+        if len(matching_definitions) != 1:
+            raise ValueError("冲突无法唯一对应到可编辑字段")
+        target = fields_by_id[matching_definitions[0]["field_id"]]
+        target.setdefault("original", deepcopy(target))
+        target.update(
+            {
+                "status": "USER_CONFIRMED",
+                "value": value,
+                "evidence": [
+                    {
+                        "source": "User conflict resolution",
+                        "fact": value,
+                    }
+                ],
+                "source_type": "user_confirmed",
+            }
+        )
+        conflict["resolved"] = True
+        conflict["resolved_value"] = value
+        conflict["source_type"] = "user_confirmed"
     session.review_version += 1
     session.generated_docx = None
     session.generated_pdf = None
@@ -1308,6 +1566,17 @@ def review_payload(session: Case6BSession) -> dict[str, Any]:
                 "group_index": definition.get("group_index"),
                 "required": bool(definition.get("required")),
                 "editable": definition.get("field_kind") not in SIGNATURE_KINDS,
+                "can_confirm": (
+                    definition.get("field_kind") not in SIGNATURE_KINDS
+                    and definition.get("group_key") != "services"
+                    and bool(
+                        str(
+                            value.get("suggested_value")
+                            or value.get("value", "")
+                        ).strip()
+                    )
+                    and value.get("status") != "USER_CONFIRMED"
+                ),
                 "source_type": value.get("source_type")
                 or (
                     "user_confirmed"
@@ -1328,8 +1597,13 @@ def review_payload(session: Case6BSession) -> dict[str, Any]:
         "unresolved_count": sum(
             1
             for field in fields
-            if field["required"] and field["status"] == "NEEDS_CONFIRMATION"
+            if (
+                field["required"]
+                and field["field_kind"] not in SIGNATURE_KINDS
+                and field["status"] not in {"FILLED", "USER_CONFIRMED"}
+            )
         ),
+
         "docx_ready": session.generated_docx is not None,
         "pdf_ready": session.generated_pdf is not None,
         "pdf_error": session.pdf_error,
@@ -1850,6 +2124,14 @@ def _validate_agent_fields(
                 item["evidence"] = []
             if item["status"] == "FILLED" and not item.get("evidence"):
                 raise ValueError("Agent 已填字段缺少证据来源")
+            if item["status"] == "FILLED":
+                for evidence in item.get("evidence", []):
+                    if (
+                        not isinstance(evidence, dict)
+                        or not str(evidence.get("source", "")).strip()
+                        or not str(evidence.get("fact", "")).strip()
+                    ):
+                        raise ValueError("Agent 已填字段的证据格式无效")
             if item["status"] == "FILLED" and not str(item.get("value", "")).strip():
                 raise ValueError("Agent 已填字段缺少字段值")
             if item["status"] in {
@@ -1858,6 +2140,10 @@ def _validate_agent_fields(
                 "LEAVE_BLANK",
                 "KEEP_BLANK",
             }:
+                suggestion = str(item.get("value", "")).strip()
+                item["suggested_value"] = (
+                    suggestion if item["status"] == "NEEDS_CONFIRMATION" else ""
+                )
                 item["value"] = ""
                 if item["status"] != "NEEDS_CONFIRMATION":
                     item["evidence"] = []
@@ -2366,116 +2652,158 @@ class Case6BDraftingHandler(CaseHandler):
         if not values or not isinstance(values[0], Case6BSession):
             raise ValueError("Case 6B 会话不存在或已过期")
         session = values[0]
+        run_id = session.analysis_run_id
+        if not run_id or session.analysis_state not in {"running", "cancelling"}:
+            run_id = begin_analysis_run(session)
         if session.lock.locked():
             raise ValueError("当前草案正在处理中，请稍候")
-        async with session.lock:
-            total = len(session.materials)
-            for index, material in enumerate(session.materials, 1):
-                if material.status == "complete":
-                    continue
-                if (
-                    self.retry_material_ids is not None
-                    and material.material_id not in self.retry_material_ids
-                ):
-                    continue
-                material.status = "extracting"
-                material.error = None
-                yield SseEvent(
-                    "progress",
-                    {
-                        "stage": "material_extract",
-                        "material_id": material.material_id,
-                        "filename": material.filename,
-                        "index": index,
-                        "total": total,
-                        "status": material.status,
-                        "message": f"正在提取《{material.filename}》",
-                    },
-                )
-                try:
-                    material.status = "summarizing"
-                    material.facts = await _summarize_material(material)
-                    material.status = "complete"
+        session.active_task = asyncio.current_task()
+        cancelled = False
+        try:
+            _raise_if_analysis_cancelled(session, run_id)
+            async with session.lock:
+                total = len(session.materials)
+                for index, material in enumerate(session.materials, 1):
+                    _raise_if_analysis_cancelled(session, run_id)
+                    if material.status == "complete":
+                        continue
+                    if (
+                        self.retry_material_ids is not None
+                        and material.material_id not in self.retry_material_ids
+                    ):
+                        continue
+                    material.status = "extracting"
+                    material.error = None
                     yield SseEvent(
                         "progress",
                         {
-                            "stage": "material_summary",
+                            "stage": "material_extract",
                             "material_id": material.material_id,
                             "filename": material.filename,
                             "index": index,
                             "total": total,
-                            "status": "complete",
-                            "message": f"《{material.filename}》处理完成",
+                            "status": material.status,
+                            "message": f"正在提取《{material.filename}》",
                         },
                     )
-                except Exception as exc:
-                    material.status = "failed"
-                    material.error = str(exc)
+                    try:
+                        material.status = "summarizing"
+                        facts = await _summarize_material(material)
+                        _raise_if_analysis_cancelled(session, run_id)
+                        material.facts = facts
+                        material.status = "complete"
+                        yield SseEvent(
+                            "progress",
+                            {
+                                "stage": "material_summary",
+                                "material_id": material.material_id,
+                                "filename": material.filename,
+                                "index": index,
+                                "total": total,
+                                "status": "complete",
+                                "message": f"《{material.filename}》处理完成",
+                            },
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        material.status = "failed"
+                        material.error = str(exc)
+                        yield SseEvent(
+                            "error",
+                            {
+                                "stage": "material_summary",
+                                "material_id": material.material_id,
+                                "filename": material.filename,
+                                "message": str(exc),
+                            },
+                        )
+                _raise_if_analysis_cancelled(session, run_id)
+                failed = [
+                    material
+                    for material in session.materials
+                    if material.status == "failed"
+                ]
+                if failed:
+                    session.analysis_state = "failed"
                     yield SseEvent(
                         "error",
                         {
-                            "stage": "material_summary",
-                            "material_id": material.material_id,
-                            "filename": material.filename,
-                            "message": str(exc),
+                            "stage": "blocked",
+                            "message": f"{len(failed)} 份材料处理失败，请重试失败材料",
                         },
                     )
-            failed = [
-                material for material in session.materials if material.status == "failed"
-            ]
-            if failed:
+                    return
+                full_summary = {
+                    "summary_version": "case6b-v1.1",
+                    "sources": [
+                        {
+                            "filename": material.filename,
+                            "source_type": material.file_type,
+                            "facts": material.facts,
+                        }
+                        for material in session.materials
+                    ],
+                    "conflicts": [],
+                }
+                conflicts = detect_fact_conflicts(full_summary["sources"])
+                full_summary["conflicts"] = conflicts
+                _raise_if_analysis_cancelled(session, run_id)
+                session.full_summary = full_summary
+                session.conflicts = conflicts
                 yield SseEvent(
-                    "error",
+                    "progress",
                     {
-                        "stage": "blocked",
-                        "message": f"{len(failed)} 份材料处理失败，请重试失败材料",
+                        "stage": "template_parse",
+                        "message": "正在解析模板字段并匹配证据",
                     },
                 )
-                return
-            session.full_summary = {
-                "summary_version": "case6b-v1.1",
-                "sources": [
+                await _run_agent_l(session)
+                _raise_if_analysis_cancelled(session, run_id)
+                session.updated_at = datetime.utcnow()
+                session_results_store[session_id] = {
+                    "case_type": "case6b",
+                    "created_at": session.created_at,
+                    "results": {
+                        RESULT_KEY: {
+                            "conversation_id": session.agent_l_conversation_id,
+                            "review_version": session.review_version,
+                        }
+                    },
+                }
+                session.analysis_state = "ready"
+                yield SseEvent(
+                    "result",
                     {
-                        "filename": material.filename,
-                        "source_type": material.file_type,
-                        "facts": material.facts,
-                    }
-                    for material in session.materials
-                ],
-                "conflicts": [],
-            }
-            session.conflicts = detect_fact_conflicts(session.full_summary["sources"])
-            session.full_summary["conflicts"] = session.conflicts
-            yield SseEvent(
-                "progress",
-                {
-                    "stage": "template_parse",
-                    "message": "正在解析模板字段并匹配证据",
-                },
-            )
-            await _run_agent_l(session)
-            session.updated_at = datetime.utcnow()
-            session_results_store[session_id] = {
-                "case_type": "case6b",
-                "created_at": session.created_at,
-                "results": {
-                    RESULT_KEY: {
-                        "conversation_id": session.agent_l_conversation_id,
+                        "result_key": RESULT_KEY,
+                        "review_required": True,
                         "review_version": session.review_version,
-                    }
-                },
-            }
-            yield SseEvent(
-                "result",
-                {
-                    "result_key": RESULT_KEY,
-                    "review_required": True,
-                    "review_version": session.review_version,
-                    "unresolved_count": review_payload(session)["unresolved_count"],
-                    "message": "字段匹配完成，请审阅后生成协议草案",
-                },
-            )
+                        "unresolved_count": review_payload(session)["unresolved_count"],
+                        "message": "字段匹配完成，请直接在草案中补充空位",
+                    },
+                )
+        except asyncio.CancelledError:
+            cancelled = True
+            _discard_analysis_results(session)
+            raise
+        except Exception:
+            if not session.discard_requested:
+                session.analysis_state = "failed"
+                session.updated_at = datetime.utcnow()
+                session_results_store.pop(session_id, None)
+            raise
+        finally:
+            session.active_task = None
+            if cancelled or session.discard_requested:
+                _discard_analysis_results(session)
+                session_store.pop(session_id, None)
+                session_results_store.pop(session_id, None)
+                try:
+                    from api.pdf_chat import session_metadata
 
+                    session_metadata.pop(session_id, None)
+                except Exception:
+                    logger.debug("取消任务时清理 Session metadata 失败", exc_info=True)
     async def generate_report(
         self,
         session_id: str,

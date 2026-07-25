@@ -11,7 +11,7 @@ from typing import Any, AsyncIterator
 from uuid import uuid4
 
 from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from api.pdf_chat import (
@@ -28,10 +28,13 @@ from cases.case6b_service_agreement import (
     Case6BDraftingHandler,
     Case6BSession,
     apply_review_changes,
+    begin_analysis_run,
     build_template_preflight,
     convert_docx_to_pdf,
+    document_view_payload,
     extract_template_manifest,
     render_draft_docx,
+    request_analysis_cancel,
     review_payload,
     validate_material,
     validate_template,
@@ -60,6 +63,7 @@ class ConflictResolution(BaseModel):
 class ReviewUpdate(BaseModel):
     version: int = Field(ge=1)
     field_updates: list[FieldUpdate] = Field(default_factory=list, max_length=200)
+    accepted_field_ids: list[str] = Field(default_factory=list, max_length=200)
     service_rows: list[ServiceRowUpdate] = Field(default_factory=list, max_length=100)
     conflict_resolutions: list[ConflictResolution] = Field(
         default_factory=list, max_length=100
@@ -69,6 +73,10 @@ class ReviewUpdate(BaseModel):
 class FinalizeRequest(BaseModel):
     version: int = Field(ge=1)
     allow_unresolved: bool = False
+
+
+class CancelRequest(BaseModel):
+    run_id: str = Field(min_length=8, max_length=64)
 
 
 def _error(status: int, code: str, message: str) -> HTTPException:
@@ -201,14 +209,20 @@ async def retry_case6b(
     ):
         raise _error(400, "NO_FAILED_MATERIAL", "当前没有需要重试的失败材料")
     handler = Case6BDraftingHandler(retry_material_ids=retry_ids)
+    try:
+        run_id = begin_analysis_run(session)
+    except ValueError as exc:
+        raise _error(409, "SESSION_BUSY", str(exc)) from exc
 
     async def stream() -> AsyncIterator[str]:
-        yield _sse({"type": "analysis_start", "session_id": session_id})
+        yield _sse({"type": "analysis_start", "session_id": session_id, "run_id": run_id})
         try:
             async for event in handler.analyze(
                 session_id, session_store, session_results_store
             ):
                 yield _sse({"type": event.type, **event.data})
+        except asyncio.CancelledError:
+            return
         except Exception as exc:
             yield _sse({"type": "fatal_error", "message": str(exc)})
             return
@@ -230,6 +244,28 @@ async def delete_case6b_session(session_id: str) -> Response:
     session_results_store.pop(session_id, None)
     session_metadata.pop(session_id, None)
     return Response(status_code=204)
+
+
+@router.post("/session/{session_id}/cancel")
+async def cancel_case6b_analysis(session_id: str, body: CancelRequest):
+    values = session_store.get(session_id)
+    if not values or not isinstance(values[0], Case6BSession):
+        return {"status": "cancelled", "run_id": body.run_id}
+    session = values[0]
+    was_running = session.analysis_state in {"running", "cancelling"}
+    try:
+        request_analysis_cancel(session, body.run_id)
+    except ValueError as exc:
+        raise _error(409, "STALE_ANALYSIS_RUN", str(exc)) from exc
+    session_results_store.pop(session_id, None)
+    if was_running:
+        return JSONResponse(
+            status_code=202,
+            content={"status": "cancelling", "run_id": body.run_id},
+        )
+    session_store.pop(session_id, None)
+    session_metadata.pop(session_id, None)
+    return {"status": "cancelled", "run_id": body.run_id}
 
 
 @router.get("/session/{session_id}/review")
@@ -258,12 +294,48 @@ async def update_case6b_review(session_id: str, body: ReviewUpdate):
                     resolution.model_dump()
                     for resolution in body.conflict_resolutions
                 ],
+                body.accepted_field_ids,
             )
         except ValueError as exc:
             code = "STALE_REVIEW" if "已更新" in str(exc) else "INVALID_REVIEW"
             raise _error(409 if code == "STALE_REVIEW" else 400, code, str(exc)) from exc
     return review_payload(session)
 
+
+@router.get("/session/{session_id}/document-view")
+async def get_case6b_document_view(session_id: str):
+    session = _session(session_id)
+    if session.lock.locked():
+        raise _error(409, "SESSION_BUSY", "当前草案正在处理中，请稍候")
+    try:
+        return await asyncio.to_thread(document_view_payload, session, session_id)
+    except ValueError as exc:
+        raise _error(409, "DOCUMENT_VIEW_NOT_READY", str(exc)) from exc
+
+
+@router.get("/session/{session_id}/document-shell")
+async def get_case6b_document_shell(
+    session_id: str,
+    manifest_hash: str = Query(min_length=64, max_length=64),
+):
+    session = _session(session_id)
+    if not session.fields:
+        raise _error(409, "REVIEW_NOT_READY", "字段分析尚未完成")
+    if session.document_shell is None or session.document_shell_hash is None:
+        await asyncio.to_thread(document_view_payload, session, session_id)
+    if manifest_hash != session.document_shell_hash:
+        raise _error(409, "STALE_DOCUMENT_VIEW", "文档结构已更新，请重新加载")
+    return Response(
+        content=session.document_shell,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "wordprocessingml.document"
+        ),
+        headers={
+            "Content-Disposition": 'inline; filename="case6b-editable-shell.docx"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 @router.post("/session/{session_id}/finalize")
 async def finalize_case6b(session_id: str, body: FinalizeRequest):

@@ -2,7 +2,7 @@
 
 eBRAM3 是一个面向法律及争议解决场景的 AI 工作台。系统以 FastAPI 单体服务为核心，将 PaddleOCR、GPTBots Agents、网页检索和文档格式化组合为独立 Use Case。
 
-当前发布候选为 `case6a-case6b-v1.0`（2026-07-25），包含 Case 1、2、4、5、6A、6B。Case 3A / 3B 尚未开发。
+当前已发布标签为 `case6a-case6b-v1.0`（2026-07-25）。当前代码是在该标签基础上的 Case 6B V1.1 发布候选，包含 Case 1、2、4、5、6A、6B；Case 3A / 3B 尚未开发。
 
 ## 功能状态
 
@@ -14,7 +14,7 @@ eBRAM3 是一个面向法律及争议解决场景的 AI 工作台。系统以 Fa
 | Case 4 | 已实现 | 单份 PDF → PyMuPDF 拆页 → Agent I 图片翻译 → 按原页尺寸合并 | 英文与繁体中文双向译文 PDF；不支持追问 |
 | Case 5 | 已实现 | 关键词 → Playwright 检索 HKLII → Agent J 摘要 | HKLII 案例摘要；DOCX/PDF；支持追问 |
 | Case 6A | 已实现 | 用户问题 → Agent K + eBRAM 官网 RAG 知识库 | 双语服务指导回答与官方来源链接 |
-| Case 6B | 已实现 | DOCX 模板 + 事实材料 → Agent A 摘要 → Agent L 双阶段 → 人工审阅 | 服务协议草案；DOCX/PDF；不支持追问 |
+| Case 6B | 已实现 | DOCX 模板 + 事实材料 → Agent A 摘要 → Agent L 双阶段 → Word 风格原位编辑、自动保存与人工审阅 | 服务协议草案；DOCX/PDF；不支持追问 |
 
 ## 系统架构
 
@@ -131,7 +131,13 @@ Agent L 在同一 conversation 内执行两轮：
 1. 文本说明 + 原始 DOCX + `case6b_template_context.md`，解析全部字段语义。
 2. 文本说明 + `case6b_field_fill_context.md`，根据字段清单、材料事实和冲突输出填充结果。
 
-关键数据全部放在 Markdown 附件中，不依赖短期记忆。用户可审阅字段、证据、冲突和重复服务行；未解决冲突阻止生成，签名和签署日期保持空白。最终在原模板副本中精准替换占位符，分别生成 DOCX 和 PDF。
+GPTBots 会把通过 base64 发送的附件重命名为时间戳文件名，即使请求已按官方契约传入
+`name`。因此上述名称是逻辑名称：应用仍发送 `name`，同时在 Markdown 内写入
+`document_role`、阶段标记和附件位置；Agent L 按这些稳定标识识别文件，不依赖平台日志名称。
+
+关键数据全部放在 Markdown 附件中，不依赖短期记忆。Agent L 完成后，系统生成只用于浏览器展示的 Word 风格草案：固定法律条款只读，已识别空位在原位置可编辑，用户可切换原模板、查看差异、证据和冲突。编辑停止约 800 毫秒后自动保存；处理中可中断并保留浏览器已选择的文件，修改后从头重跑。未解决冲突阻止生成，普通待确认字段经风险确认后以黄色标记保留，签名和签署日期保持空白。最终文件始终从原始模板按稳定 locator 回填，分别生成 DOCX 和 PDF。
+
+Agent L 当前已发布的测试模式版本是 `v1.0.9`。文件名无关的附件识别 Prompt 已于 2026-07-25 导入为 `v1.0.11` 草稿，但尚未发布；生成版 `.bot` 与草稿状态均保留在仓库中，不能把该草稿视为线上已生效配置。
 
 详细限制和审阅契约见 [项目交接文档](docs/HANDOVER.md) 与 [Agent L overview](GPTbots_.bot/generated/case6b/overview.md)。
 
@@ -153,7 +159,10 @@ Agent L 在同一 conversation 内执行两轮：
 | GET | `/case6b/session/{id}/template` | 模板自动预检结果 |
 | POST | `/case6b/session/{id}/retry` | 仅重试失败材料 |
 | GET/PATCH | `/case6b/session/{id}/review` | 读取或更新字段审阅 |
-| POST | `/case6b/session/{id}/finalize` | 确认风险并生成草案 |
+| POST | `/case6b/session/{id}/cancel` | 幂等中断当前分析 run |
+| GET | `/case6b/session/{id}/document-view` | 获取 Word 风格编辑器字段清单与 shell 地址 |
+| GET | `/case6b/session/{id}/document-shell` | 下载带稳定字段标记的只读 DOCX shell |
+| POST | `/case6b/session/{id}/finalize` | 确认风险并生成正式文档 |
 
 ## 项目结构
 
@@ -182,13 +191,14 @@ node --check static\case6a.js
 node --check static\case6b.js
 ```
 
-本发布基线包含 99 项 Python 测试。外部 GPTBots、PaddleOCR、HKLII、LibreOffice 和 Word 仍需在目标环境进行集成验证。
+当前基线包含 118 项 Python 测试。外部 GPTBots、PaddleOCR、HKLII、LibreOffice 和 Word 仍需在目标环境进行集成验证。
 
 ## 已知限制与安全
 
 - Session、上传材料和结果保存在进程内存中，默认两小时 TTL；服务重启后不可恢复，不支持多实例共享。
 - Case 5 的 `ScrapedResult` 没有 `created_at`，现有自动清理会跳过其 Session；手动重置/删除仍可清理。
 - Case 6B 仅支持常规 DOCX 占位符，不支持内容控件、邮件合并域、文本框和复杂浮动 Word 对象。
+- Case 6B 浏览器预览会拒绝 `altChunk`、危险外部资源和异常样式标识；该预览按 Demo 的必要安全边界设计，正式环境仍应只接收可信来源的协议模板。
 - Case 6B 的 PDF 转换依赖本机 LibreOffice 或 Microsoft Word；两者均失败时仍保留 DOCX 下载。
 - Agent 和模型输出具有不确定性，费用、规则、译文和协议内容必须由业务人员复核。
 - 仓库当前为 Private，但旧公开 Git 历史曾包含真实 Agent A、Agent B 和 PaddleOCR 凭证，且尚未完成轮换；私有化不能使旧凭证自动失效。
